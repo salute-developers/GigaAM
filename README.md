@@ -53,7 +53,7 @@ GigaAM-Emo is an acoustic model for Emotion Recognition. We fine-tuned the GigaA
 
 Resources:
 * [model weights](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/emo_model_weights.ckpt)
-* [encoder config](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/encoder_config.yaml)
+* [model config](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/emo_model_config.yaml)
 * [colab example](https://colab.research.google.com/drive/1byUuMwTGyPocgHvkTtQNIcxWKgvbxanE?usp=sharing)
 * [docker example](./examples/README.md)
 
@@ -67,5 +67,5 @@ The following table summarizes the performance of different models on the [Dusha
 | GigaAM-Emo | <span style="color:green">0.90</span> | <span style="color:green">0.87</span> | <span style="color:green">0.84</span> | <span style="color:green">0.90</span> | <span style="color:green">0.76</span> | <span style="color:green">0.67</span> |
 
 ## Links
-* [[habr] GigaAM: класс открытых моделей для обработки звучащей речи]()
+* [[habr] GigaAM: класс открытых моделей для обработки звучащей речи](https://habr.com/ru/companies/sberdevices/articles/805569)
 * [[youtube] Speech-only Pre-training: обучение универсального аудиоэнкодера](https://www.youtube.com/watch?v=ktO4Mx6UMNk)
