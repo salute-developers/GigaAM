@@ -1,3 +1,9 @@
+```
+apt install python3-dev
+apt install python3-venv
+apt install ffmpeg libavcodec-extra
+```
+
 ## virtual environment
 ```bash
 python3.10 -m venv venv && . venv/bin/activate
