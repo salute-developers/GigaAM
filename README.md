@@ -5,7 +5,9 @@
 ## Table of contents
 
 * [GigaAM](#gigaam)
-* [GigaAM-CTC](#gigaam-ctc)
+* [GigaAM for Speech Recognition](#gigaam-for-speech-recognition)
+  * [GigaAM-CTC](#gigaam-ctc)
+  * [GigaAM-RNNT](#gigaam-rnnt)
 * [GigaAM-Emo](#gigaam-emo)
 * [License](./GigaAM%20License_NC.pdf)
 * [Links](#links)
@@ -15,15 +17,19 @@
 GigaAM (**Giga** **A**coustic **M**odel) is a [Conformer](https://arxiv.org/pdf/2005.08100.pdf)-based [wav2vec2](https://arxiv.org/pdf/2006.11477.pdf) foundational model (around 240M parameters). We trained GigaAM on nearly 50 thousand hours of diversified speech audio in the Russian language.
 
 Resources:
-* [model weights](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/ssl_model_weights.ckpt)
-* [encoder config](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/encoder_config.yaml)
-* [colab example](https://colab.research.google.com/drive/1eZm_MiZqaYNz4zgsjt2yfLo_-oauGoH0?usp=sharing)
-* [docker example](./examples/README.md)
+* [Model weights](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/ssl_model_weights.ckpt)
+* [Encoder config](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/encoder_config.yaml)
+* [Colab example](https://colab.research.google.com/github/salute-developers/GigaAM/blob/main/examples/notebooks/GigaAM_Model_Usage_Example.ipynb)
+* [Docker example](./examples/README.md)
 
 
-## GigaAM-CTC
+## GigaAM for Speech Recognition
 
-GigaAM-CTC is an Automatic Speech Recognition model. We fine-tuned the GigaAM Encoder with [Connectionist Temporal Classification](https://www.cs.toronto.edu/~graves/icml_2006.pdf) using the [NeMo toolkit](https://github.com/NVIDIA/NeMo) on publicly available Russian labeled data:
+We fine-tuned the GigaAM encoder for Speech Recognition with two different decoders:
+* GigaAM-CTC was fine-tunined with [Connectionist Temporal Classification](https://www.cs.toronto.edu/~graves/icml_2006.pdf) and character-based tokenizer.
+* GigaAM-RNNT was fine-tuned with [RNN Transducer loss](https://arxiv.org/abs/1211.3711) and subword tokenizer.
+
+Both models were trained using [the NeMo toolkit](https://github.com/NVIDIA/NeMo) on publicly available Russian labeled data:
 
 | dataset | size, hours | weight |
 | --- | --- | --- |
@@ -34,28 +40,35 @@ GigaAM-CTC is an Automatic Speech Recognition model. We fine-tuned the GigaAM En
 
 
 Resources:
-* [model weights](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/ctc_model_weights.ckpt)
-* [model config](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/ctc_model_config.yaml)
-* [colab example](https://colab.research.google.com/drive/1ZVuPMXpo3s7CHXvJmvpgOSebbSQGlOzG?usp=sharing)
-* [docker example](./examples/README.md)
+* ### GigaAM-CTC:
+  * [Model weights](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/ctc_model_weights.ckpt)
+  * [Model config](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/ctc_model_config.yaml)
+  * [Colab example](https://colab.research.google.com/github/salute-developers/GigaAM/blob/main/examples/notebooks/GigaAM_CTC_Model_Usage_Example.ipynb)
+  * [Docker example](./examples/README.md)
+* ### GigaAM-RNNT:
+  * [Model weights](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/rnnt_model_weights.ckpt)
+  * [Model config](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/rnnt_model_config.yaml)
+  * [Colab example](https://colab.research.google.com/github/salute-developers/GigaAM/blob/main/examples/notebooks/GigaAM_RNNT_Model_Usage_Example.ipynb)
+  * [Docker examples](./examples/README.md)
 
 The following table summarizes the performance of different models in terms of Word Error Rate on open Russian datasets:
 
 | model | parameters | [Golos Crowd](https://arxiv.org/abs/2106.10161) | [Golos Farfield](https://arxiv.org/abs/2106.10161) | [OpenSTT Youtube](https://github.com/snakers4/open_stt) | [OpenSTT Phone calls](https://github.com/snakers4/open_stt) | [OpenSTT Audiobooks](https://github.com/snakers4/open_stt) | [Mozilla Common Voice](https://arxiv.org/pdf/1912.06670.pdf) | [Russian LibriSpeech](https://arxiv.org/pdf/2012.03411.pdf) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| [Whisper-large-v3](https://huggingface.co/openai/whisper-large-v3) | 1.5B | 17.4 | 14.5 | 11.1 | 31.2 | 17.0 | 5.3 | 9.0 |
-| [NeMo Conformer-RNNT](https://huggingface.co/nvidia/stt_ru_conformer_transducer_large) | 120M | <span style="color:green">2.6</span> | 7.2 | 24.0 | 33.8 | 17.0 | 2.8 | 13.5 |
-| GigaAM-CTC | 242M | 3.1 | <span style="color:green">5.7</span> | <span style="color:green">18.4</span> | <span style="color:green">25.6</span> | <span style="color:green">15.1</span> | <span style="color:green">1.7</span> | <span style="color:green">8.1</span> |
+| [Whisper-large-v3](https://huggingface.co/openai/whisper-large-v3) | 1.5B | 17.4 | 14.5 | 21.1 | 31.2 | 17.0 | 5.3 | 9.0 |
+| [NVIDIA Ru-FastConformer-RNNT](https://huggingface.co/nvidia/stt_ru_fastconformer_hybrid_large_pc) | 115M | 2.6 | 6.6 | 23.8 | 32.9 | 16.4 | 2.7 | 11.6 |
+| GigaAM-CTC | 242M | 3.1 | 5.7 | 18.4 | 25.6 | 15.1| 1.7 | 8.1 |
+| GigaAM-RNNT | 243M | <span style="color:green">2.3</span> | <span style="color:green">4.4</span> | <span style="color:green">16.7</span> | <span style="color:green">22.9</span> | <span style="color:green">13.9</span> | <span style="color:green">0.9</span> | <span style="color:green">7.4</span> |
 
 ## GigaAM-Emo
 
 GigaAM-Emo is an acoustic model for Emotion Recognition. We fine-tuned the GigaAM Encoder on the [Dusha](https://arxiv.org/pdf/2212.12266.pdf) dataset.
 
 Resources:
-* [model weights](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/emo_model_weights.ckpt)
-* [model config](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/emo_model_config.yaml)
-* [colab example](https://colab.research.google.com/drive/1byUuMwTGyPocgHvkTtQNIcxWKgvbxanE?usp=sharing)
-* [docker example](./examples/README.md)
+* [Model weights](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/emo_model_weights.ckpt)
+* [Model config](https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM/emo_model_config.yaml)
+* [Colab example](https://colab.research.google.com/github/salute-developers/GigaAM/blob/main/examples/notebooks/GigaAM_Emo_Model_Usage_Example.ipynb)
+* [Docker example](./examples/README.md)
 
 The following table summarizes the performance of different models on the [Dusha](https://arxiv.org/pdf/2212.12266.pdf) dataset:
 
@@ -68,4 +81,5 @@ The following table summarizes the performance of different models on the [Dusha
 
 ## Links
 * [[habr] GigaAM: класс открытых моделей для обработки звучащей речи](https://habr.com/ru/companies/sberdevices/articles/805569)
+* [[youtube] GigaAM: Семейство акустических моделей для русского языка](https://youtu.be/PvZuTUnZa2Q?t=26442)
 * [[youtube] Speech-only Pre-training: обучение универсального аудиоэнкодера](https://www.youtube.com/watch?v=ktO4Mx6UMNk)
