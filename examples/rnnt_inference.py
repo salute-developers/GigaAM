@@ -2,13 +2,14 @@ import argparse
 
 import torch
 import torchaudio
-from nemo.collections.asr.models import EncDecCTCModel
+from nemo.collections.asr.models import EncDecRNNTBPEModel
 from nemo.collections.asr.modules.audio_preprocessing import (
     AudioToMelSpectrogramPreprocessor as NeMoAudioToMelSpectrogramPreprocessor,
 )
 from nemo.collections.asr.parts.preprocessing.features import (
     FilterbankFeaturesTA as NeMoFilterbankFeaturesTA,
 )
+from omegaconf import OmegaConf, open_dict
 
 
 class FilterbankFeaturesTA(NeMoFilterbankFeaturesTA):
@@ -50,26 +51,39 @@ class AudioToMelSpectrogramPreprocessor(NeMoAudioToMelSpectrogramPreprocessor):
 
 def _parse_args():
     parser = argparse.ArgumentParser(
-        description="Run inference using GigaAM-CTC checkpoint"
+        description="Run inference using GigaAM-RNNT checkpoint"
     )
-    parser.add_argument("--model_config", help="Path to GigaAM-CTC config file (.yaml)")
     parser.add_argument(
-        "--model_weights", help="Path to GigaAM-CTC checkpoint file (.ckpt)"
+        "--model_config", help="Path to GigaAM-RNNT config file (.yaml)"
     )
+    parser.add_argument(
+        "--model_weights", help="Path to GigaAM-RNNT checkpoint file (.ckpt)"
+    )
+    parser.add_argument("--tokenizer_path", help="Path to tokenizer directory")
     parser.add_argument("--audio_path", help="Path to audio signal")
     parser.add_argument("--device", help="Device: cpu / cuda")
     return parser.parse_args()
 
 
-def main(model_config: str, model_weights: str, device: str, audio_path: str):
-    model = EncDecCTCModel.from_config_file(model_config)
+def main(
+    model_config: str,
+    model_weights: str,
+    tokenizer_path: str,
+    device: str,
+    audio_path: str,
+):
+    config = OmegaConf.load(model_config)
+    with open_dict(config):
+        config.tokenizer.dir = tokenizer_path
+
+    model = EncDecRNNTBPEModel.from_config_dict(config)
 
     ckpt = torch.load(model_weights, map_location="cpu")
     model.load_state_dict(ckpt, strict=False)
     model = model.to(device)
     model.eval()
 
-    transcription = model.transcribe([audio_path])[0]
+    transcription = model.transcribe([audio_path])[0][0]
     print(f"transcription: {transcription}")
 
 
@@ -78,6 +92,7 @@ if __name__ == "__main__":
     main(
         model_config=args.model_config,
         model_weights=args.model_weights,
+        tokenizer_path=args.tokenizer_path,
         device=args.device,
         audio_path=args.audio_path,
     )
