@@ -129,13 +129,3 @@ model = model.to(device)
 transcription, timestamps = parse_with_timestamp("example.wav", model)
 print(f"transcription: {transcription}")
 print(f"timestamps: {timestamps}")
-
-
-if __name__ == "__main__":
-    args = _parse_args()
-    main(
-        model_config=args.model_config,
-        model_weights=args.model_weights,
-        device=args.device,
-        audio_path=args.audio_path,
-    )
