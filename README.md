@@ -196,7 +196,7 @@ GigaAM-Emo is a fine-tuned model for emotion recognition trained on the [Dusha](
 ```python
 import gigaam
 model = gigaam.load_model('emo')
-emotion2prob: Dict[str, int] = model.get_probs("example.wav")
+emotion2prob: dict[str, int] = model.get_probs("example.wav")
 
 print(", ".join([f"{emotion}: {prob:.3f}" for emotion, prob in emotion2prob.items()]))
 ```
