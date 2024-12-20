@@ -197,9 +197,9 @@ class GigaAMEmo(GigaAM):
         Encoder-decoder forward to save model entirely in onnx format.
         """
         encoded, _ = self.encoder(features, feature_lengths)
-        enc_pooled = nn.functional.avg_pool1d(
-            encoded, kernel_size=encoded.shape[-1].item()
-        ).squeeze(-1)
+
+        enc_pooled = encoded.mean(dim=-1)
+
         return nn.functional.softmax(self.head(enc_pooled)[0], dim=-1)
 
     def to_onnx(self, dir_path: str = ".") -> None:

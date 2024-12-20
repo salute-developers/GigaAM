@@ -1,5 +1,5 @@
 import warnings
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import onnxruntime as rt
@@ -59,27 +59,10 @@ def transcribe_sample(
     sessions: List[rt.InferenceSession],
     preprocessor: Optional[gigaam.preprocess.FeatureExtractor] = None,
 ) -> str:
-    if preprocessor is None:
-        preprocessor = gigaam.preprocess.FeatureExtractor(SAMPLE_RATE, FEAT_IN)
 
     assert model_type in ["ctc", "rnnt"], "Only `ctc` and `rnnt` inference supported"
 
-    input_signal = gigaam.load_audio(wav_file)
-    input_signal = preprocessor(
-        input_signal.unsqueeze(0), torch.tensor([input_signal.shape[-1]])
-    )[0].numpy()
-
-    enc_sess = sessions[0]
-    enc_inputs = {
-        node.name: data
-        for (node, data) in zip(
-            enc_sess.get_inputs(),
-            [input_signal.astype(DTYPE), [input_signal.shape[-1]]],
-        )
-    }
-    enc_features = enc_sess.run(
-        [node.name for node in enc_sess.get_outputs()], enc_inputs
-    )[0]
+    enc_features = encode_wav(preprocessor, sessions, wav_file)
 
     token_ids = []
     prev_token = BLANK_IDX
@@ -131,6 +114,39 @@ def transcribe_sample(
     return "".join(VOCAB[tok] for tok in token_ids)
 
 
+def encode_wav(preprocessor, sessions, wav_file):
+    if preprocessor is None:
+        preprocessor = gigaam.preprocess.FeatureExtractor(SAMPLE_RATE, FEAT_IN)
+
+    input_signal = gigaam.load_audio(wav_file)
+    input_signal = preprocessor(
+        input_signal.unsqueeze(0), torch.tensor([input_signal.shape[-1]])
+    )[0].numpy()
+    enc_sess = sessions[0]
+    enc_inputs = {
+        node.name: data
+        for (node, data) in zip(
+            enc_sess.get_inputs(),
+            [input_signal.astype(DTYPE), [input_signal.shape[-1]]],
+        )
+    }
+    enc_features = enc_sess.run(
+        [node.name for node in enc_sess.get_outputs()], enc_inputs
+    )[0]
+    return enc_features
+
+
+def recognise_emotion(
+    wav_file: str,
+    sessions: List[rt.InferenceSession],
+    preprocessor: Optional[gigaam.preprocess.FeatureExtractor] = None,
+) -> Dict[str, float]:
+    id2name = ["angry", "sad", "neutral", "positive"]
+    probs = encode_wav(preprocessor, sessions, wav_file)
+
+    return {emo: conf for emo, conf in zip(id2name, probs.tolist())}
+
+
 def load_onnx_sessions(
     onnx_dir: str,
     model_type: str,
@@ -150,6 +166,16 @@ def load_onnx_sessions(
                 model_path, providers=["CPUExecutionProvider"], sess_options=opts
             )
         ]
+    elif model_type == "emo":
+        assert model_version == "v1", "There is only v1 version available."
+        model_path = f"{onnx_dir}/{model_version}_{model_type}.onnx"
+
+        sessions = [
+            rt.InferenceSession(
+                model_path, providers=["CPUExecutionProvider"], sess_options=opts
+            )
+        ]
+
     else:
         pth = f"{onnx_dir}/{model_version}_{model_type}"
         enc_sess = rt.InferenceSession(
