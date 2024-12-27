@@ -155,6 +155,11 @@ class GigaAMASR(GigaAM):
         )
         for segment, segment_boundaries in zip(segments, boundaries):
             wav = segment.to(self._device).unsqueeze(0).to(self._dtype)
+
+            # Skipping zero-length segments
+            if wav.shape[-1] == 0:
+                continue
+            
             length = torch.full([1], wav.shape[-1], device=self._device)
             encoded, encoded_len = self.forward(wav, length)
             result = self.decoding.decode(self.head, encoded, encoded_len)[0]
