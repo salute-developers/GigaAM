@@ -4,3 +4,4 @@ build
 *.wav
 .DS_Store
 .venv
+.vscode
