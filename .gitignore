@@ -1,7 +1,7 @@
 __pycache__
 build
 *.egg-info
-# *.wav
+*.wav
 .DS_Store
 .venv
 .vscode
