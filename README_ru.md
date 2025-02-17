@@ -108,7 +108,7 @@ embedding, _ = model.embed_audio(audio_path)
 
 ### Использование моделей распознавания речи (GigaAM-ASR)
 
-  #### Базовое использование - распознование речи на коротких аудиозаписях (до 30 секунд)
+  #### Базовое использование - распознавание речи на коротких аудиозаписях (до 30 секунд)
   ```python
    import gigaam
    model_name = "rnnt"  # Options: "v2_ctc" or "ctc", "v2_rnnt" or "rnnt", "v1_ctc", "v1_rnnt"
@@ -117,7 +117,7 @@ embedding, _ = model.embed_audio(audio_path)
    ```
 
   #### Распознавание речи на длинных аудиозаписях
-  1. Установите зависимости для внешней VAD-модели ([pyannote.audio](https://github.com/pyannote/pyannote-audio) library):
+  1. Установите зависимости для внешней VAD-модели (библиотеки [pyannote.audio](https://github.com/pyannote/pyannote-audio) и [SileroVAD](https://github.com/snakers4/silero-vad)) с помощью команды:
       ```bash
       pip install gigaam[longform]
       ```
@@ -125,13 +125,14 @@ embedding, _ = model.embed_audio(audio_path)
       * Сгенерируйте [Hugging Face API token](https://huggingface.co/docs/hub/security-tokens)
       * Примите условия для получения доступа к контенту [pyannote/voice-activity-detection](https://huggingface.co/pyannote/voice-activity-detection)
       * Примите условия для получения доступа к контенту [pyannote/segmentation](https://huggingface.co/pyannote/segmentation)
+      * Или не создавайте токен Hugging Face, чтобы использовать локальную SileroVAD вместо PyAnnote pipeline.
   
   3. Используйте метод ```model.transcribe_longform```:
       ```python
       import os
       import gigaam
 
-      os.environ["HF_TOKEN"] = "<HF_TOKEN>"
+      os.environ["HF_TOKEN"] = "<HF_TOKEN>" # Удалите эту строку, чтобы использовать SileroVAD
 
       model = gigaam.load_model("ctc")
       recognition_result = model.transcribe_longform("long_example.wav")
