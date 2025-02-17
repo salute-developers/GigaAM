@@ -1,14 +1,58 @@
 from subprocess import CalledProcessError, run
-from typing import Tuple
+from typing import Tuple, List, Union
 
 import torch
 import torchaudio
-from torch import Tensor, nn
+from torch import Tensor, nn, from_numpy, mean, float32, int16
+from numpy import ndarray, asarray
 
 SAMPLE_RATE = 16000
 
 
 def load_audio(
+    audio: Union[str, Tensor, ndarray, List, Tuple],
+    sample_rate: int = SAMPLE_RATE,
+    return_format: str = "float",
+) -> Tensor:
+    """
+    Load an audio file and resample it to the specified sample rate.
+    If the input is not a string, it is assumed to be an iterable object
+    containing the audio samples with provided sample rate (16kHz by default).
+    """
+    if isinstance(audio, str):
+        return load_audio_from_path(audio, sample_rate, return_format)
+
+    if not isinstance(audio, Tensor):
+        if not isinstance(audio, ndarray):
+            try:
+                audio = asarray(audio)
+            except ValueError:
+                raise ValueError(
+                    "Passed audio content is not convertible to numpy.ndarray!"
+                    f"Expected 1D Python list or tuple or numpy.ndarray or torch.Tensor, got {type(audio)}"
+                )
+
+        assert "float" in audio.dtype.name or "int" in audio.dtype.name, f"Audio should be a float or int array, got {audio.dtype} array"
+
+        audio = from_numpy(audio)
+
+    if not audio.dtype.is_floating_point and return_format == "float" and audio.abs().max() > 1:
+        audio = audio.float() / 32768.0
+    elif audio.dtype.is_floating_point and return_format == "int" and audio.abs().max() <= 1.0:
+        audio = audio.mul(32768.0)
+
+    if audio.ndim != 1:
+        audio = mean(audio, dim=0)
+
+    if audio.dtype != float32 and return_format == "float":
+        audio = audio.to(dtype=float32)
+    elif audio.dtype != int16 and return_format == "int":
+        audio = audio.round().to(dtype=int16)
+
+    return audio
+
+
+def load_audio_from_path(
     audio_path: str, sample_rate: int = SAMPLE_RATE, return_format: str = "float"
 ) -> Tensor:
     """
