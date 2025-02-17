@@ -72,7 +72,7 @@ def segment_audio(
 
     segments: List[torch.Tensor] = []
     curr_duration = 0.0
-    curr_start = 0.0
+    curr_start = -1.0
     curr_end = 0.0
     boundaries: List[Tuple[float, float]] = []
 
@@ -80,6 +80,11 @@ def segment_audio(
     for segment in sad_segments.get_timeline().support():
         start = max(0, segment.start)
         end = min(len(audio) / 1000, segment.end)
+
+        if int(curr_start) == -1:
+            curr_start, curr_end, curr_duration = start, end, end - start
+            continue
+
         if (
             curr_duration > min_duration and start - curr_end > new_chunk_threshold
         ) or (curr_duration + (end - curr_end) > max_duration):
