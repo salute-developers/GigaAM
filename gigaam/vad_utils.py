@@ -35,6 +35,9 @@ def get_pipeline(device: Union[str, torch.device]) -> Pipeline:
 
 
 def get_silero_vad(device: Union[str, torch.device]):
+    """
+    Retrieves a SileroVAD model and moves it to the specified device.
+    """
     global _SILERO_MODEL
 
     if _SILERO_MODEL is None:
@@ -66,6 +69,7 @@ def segment_audio(
     """
     Segments an audio waveform into smaller chunks based on speech activity.
     The segmentation is performed using a PyAnnote voice activity detection pipeline.
+    If the HF_TOKEN environment variable is not set, the segmentation is performed using SileroVAD.
     """
 
     audio = AudioSegment(
