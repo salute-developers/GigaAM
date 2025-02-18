@@ -1,5 +1,5 @@
 import warnings
-from typing import List, Optional, Union, Tuple
+from typing import Iterable, List, Optional, Union
 
 import numpy as np
 import onnxruntime as rt
@@ -56,7 +56,7 @@ VOCAB = [
 
 
 def transcribe_sample(
-    wav_or_file: Union[str, Tensor, ndarray, List, Tuple],
+    wav_or_file: Union[str, Tensor, ndarray, Iterable],
     model_type: str,
     sessions: List[rt.InferenceSession],
     preprocessor: Optional[gigaam.preprocess.FeatureExtractor] = None,

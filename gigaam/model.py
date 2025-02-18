@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple, Union
+from typing import Dict, Iterable, List, Tuple, Union
 
 import hydra
 import omegaconf
@@ -45,7 +45,7 @@ class GigaAM(nn.Module):
     def _dtype(self) -> torch.dtype:
         return next(self.parameters()).dtype
 
-    def prepare_wav(self, wav_or_file: Union[str, Tensor, ndarray, List, Tuple]) -> Tuple[Tensor, Tensor]:
+    def prepare_wav(self, wav_or_file: Union[str, Tensor, ndarray, Iterable]) -> Tuple[Tensor, Tensor]:
         """
         Prepare an audio file for processing by loading it onto
         the correct device and converting its format.
@@ -57,7 +57,7 @@ class GigaAM(nn.Module):
         length = torch.full([1], wav.shape[-1], device=self._device)
         return wav, length
 
-    def embed_audio(self, wav_or_file: Union[str, Tensor, ndarray, List, Tuple]) -> Tuple[Tensor, Tensor]:
+    def embed_audio(self, wav_or_file: Union[str, Tensor, ndarray, Iterable]) -> Tuple[Tensor, Tensor]:
         """
         Extract audio representations using the GigaAM model.
         If the input is not a string, it is assumed to be an iterable object
@@ -90,7 +90,7 @@ class GigaAMASR(GigaAM):
         self.decoding = hydra.utils.instantiate(self.cfg.decoding)
 
     @torch.inference_mode()
-    def transcribe(self, wav_or_file: Union[str, Tensor, ndarray, List, Tuple]) -> str:
+    def transcribe(self, wav_or_file: Union[str, Tensor, ndarray, Iterable]) -> str:
         """
         Transcribes a short audio file into text.
         If the input is not a string, it is assumed to be an iterable object
@@ -147,7 +147,7 @@ class GigaAMASR(GigaAM):
 
     @torch.inference_mode()
     def transcribe_longform(
-        self, wav_or_file: Union[str, Tensor, ndarray, List, Tuple], **kwargs
+        self, wav_or_file: Union[str, Tensor, ndarray, Iterable], **kwargs
     ) -> List[Dict[str, Union[str, Tuple[float, float]]]]:
         """
         Transcribes a long audio file by splitting it into segments and
@@ -186,7 +186,7 @@ class GigaAMEmo(GigaAM):
         self.head = hydra.utils.instantiate(self.cfg.head)
         self.id2name = cfg.id2name
 
-    def get_probs(self, wav_or_file: Union[str, Tensor, ndarray, List, Tuple]) -> Dict[str, float]:
+    def get_probs(self, wav_or_file: Union[str, Tensor, ndarray, Iterable]) -> Dict[str, float]:
         """
         Calculate probabilities for each emotion class based on the provided audio file.
         If the input is not a string, it is assumed to be an iterable object

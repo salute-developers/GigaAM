@@ -1,5 +1,5 @@
 from subprocess import CalledProcessError, run
-from typing import Tuple, List, Union
+from typing import Iterable, Tuple, Union
 
 import torch
 import torchaudio
@@ -10,14 +10,14 @@ SAMPLE_RATE = 16000
 
 
 def load_audio(
-    audio: Union[str, Tensor, ndarray, List, Tuple],
+    audio: Union[str, Tensor, ndarray, Iterable],
     sample_rate: int = SAMPLE_RATE,
     return_format: str = "float",
 ) -> Tensor:
     """
     Load an audio file and resample it to the specified sample rate.
-    If the input is not a string, it is assumed to be an iterable object
-    containing the audio samples with provided sample rate (16kHz by default).
+    If the input is not a string (path), it is assumed to be an iterable object
+    containing audio samples with provided sample rate (16kHz by default).
     """
     if isinstance(audio, str):
         return load_audio_from_path(audio, sample_rate, return_format)
@@ -26,11 +26,11 @@ def load_audio(
         if not isinstance(audio, ndarray):
             try:
                 audio = asarray(audio)
-            except ValueError:
+            except ValueError as exc:
                 raise ValueError(
                     "Passed audio content is not convertible to numpy.ndarray!"
-                    f"Expected 1D Python list or tuple or numpy.ndarray or torch.Tensor, got {type(audio)}"
-                )
+                    f"Expected Iterable Python object or numpy.ndarray or torch.Tensor, got {type(audio)}"
+                ) from exc
 
         assert "float" in audio.dtype.name or "int" in audio.dtype.name, f"Audio should be a float or int array, got {audio.dtype} array"
 
