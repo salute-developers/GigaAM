@@ -10,11 +10,11 @@ from torch import Tensor
 warnings.simplefilter("ignore", category=UserWarning)
 
 import gigaam
+from gigaam.preprocess import SAMPLE_RATE
 
 D_MODEL = 768
 DTYPE = np.float32
 MAX_LETTERS_PER_FRAME = 3
-SAMPLE_RATE = 16000
 FEAT_IN = 64
 PRED_HIDDEN = 320
 BLANK_IDX = 33
@@ -60,13 +60,14 @@ def transcribe_sample(
     model_type: str,
     sessions: List[rt.InferenceSession],
     preprocessor: Optional[gigaam.preprocess.FeatureExtractor] = None,
+    sample_rate: int = SAMPLE_RATE,
 ) -> str:
     if preprocessor is None:
         preprocessor = gigaam.preprocess.FeatureExtractor(SAMPLE_RATE, FEAT_IN)
 
     assert model_type in ["ctc", "rnnt"], "Only `ctc` and `rnnt` inference supported"
 
-    input_signal = gigaam.load_audio(wav_or_file)
+    input_signal = gigaam.load_audio(wav_or_file, sample_rate=sample_rate)
     input_signal = preprocessor(
         input_signal.unsqueeze(0), torch.tensor([input_signal.shape[-1]])
     )[0].numpy()

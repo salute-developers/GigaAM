@@ -45,25 +45,25 @@ class GigaAM(nn.Module):
     def _dtype(self) -> torch.dtype:
         return next(self.parameters()).dtype
 
-    def prepare_wav(self, wav_or_file: Union[str, Tensor, ndarray, Iterable]) -> Tuple[Tensor, Tensor]:
+    def prepare_wav(self, wav_or_file: Union[str, Tensor, ndarray, Iterable], sample_rate: int = SAMPLE_RATE) -> Tuple[Tensor, Tensor]:
         """
         Prepare an audio file for processing by loading it onto
         the correct device and converting its format.
         If the input is not a string, it is assumed to be an iterable object
-        containing the audio samples at 16kHz sample rate.
+        containing the audio samples at provided sample rate.
         """
-        wav = load_audio(wav_or_file)
+        wav = load_audio(wav_or_file, sample_rate=sample_rate)
         wav = wav.to(self._device).to(self._dtype).unsqueeze(0)
         length = torch.full([1], wav.shape[-1], device=self._device)
         return wav, length
 
-    def embed_audio(self, wav_or_file: Union[str, Tensor, ndarray, Iterable]) -> Tuple[Tensor, Tensor]:
+    def embed_audio(self, wav_or_file: Union[str, Tensor, ndarray, Iterable], sample_rate: int = SAMPLE_RATE) -> Tuple[Tensor, Tensor]:
         """
         Extract audio representations using the GigaAM model.
         If the input is not a string, it is assumed to be an iterable object
-        containing the audio samples at 16kHz sample rate.
+        containing the audio samples at provided sample rate.
         """
-        wav, length = self.prepare_wav(wav_or_file)
+        wav, length = self.prepare_wav(wav_or_file, sample_rate=sample_rate)
         encoded, encoded_len = self.forward(wav, length)
         return encoded, encoded_len
 
@@ -90,13 +90,13 @@ class GigaAMASR(GigaAM):
         self.decoding = hydra.utils.instantiate(self.cfg.decoding)
 
     @torch.inference_mode()
-    def transcribe(self, wav_or_file: Union[str, Tensor, ndarray, Iterable]) -> str:
+    def transcribe(self, wav_or_file: Union[str, Tensor, ndarray, Iterable], sample_rate: int = SAMPLE_RATE) -> str:
         """
         Transcribes a short audio file into text.
         If the input is not a string, it is assumed to be an iterable object
-        containing the audio samples at 16kHz sample rate.
+        containing the audio samples at provided sample rate.
         """
-        wav, length = self.prepare_wav(wav_or_file)
+        wav, length = self.prepare_wav(wav_or_file, sample_rate=sample_rate)
         if length > LONGFORM_THRESHOLD:
             raise ValueError("Too long wav file, use 'transcribe_longform' method.")
 
@@ -147,18 +147,18 @@ class GigaAMASR(GigaAM):
 
     @torch.inference_mode()
     def transcribe_longform(
-        self, wav_or_file: Union[str, Tensor, ndarray, Iterable], **kwargs
+        self, wav_or_file: Union[str, Tensor, ndarray, Iterable], sample_rate: int = SAMPLE_RATE, **kwargs
     ) -> List[Dict[str, Union[str, Tuple[float, float]]]]:
         """
         Transcribes a long audio file by splitting it into segments and
         then transcribing each segment.
         If the input is not a string, it is assumed to be an iterable object
-        containing the audio samples at 16kHz sample rate.
+        containing the audio samples at provided sample rate.
         """
         from .vad_utils import segment_audio
 
         transcribed_segments = []
-        wav = load_audio(wav_or_file, return_format="int")
+        wav = load_audio(wav_or_file, sample_rate=sample_rate, return_format="int")
         segments, boundaries = segment_audio(
             wav, SAMPLE_RATE, device=self._device, **kwargs
         )
@@ -186,13 +186,13 @@ class GigaAMEmo(GigaAM):
         self.head = hydra.utils.instantiate(self.cfg.head)
         self.id2name = cfg.id2name
 
-    def get_probs(self, wav_or_file: Union[str, Tensor, ndarray, Iterable]) -> Dict[str, float]:
+    def get_probs(self, wav_or_file: Union[str, Tensor, ndarray, Iterable], sample_rate: int = SAMPLE_RATE) -> Dict[str, float]:
         """
         Calculate probabilities for each emotion class based on the provided audio file.
         If the input is not a string, it is assumed to be an iterable object
-        containing the audio samples at 16kHz sample rate.
+        containing the audio samples at provided sample rate.
         """
-        wav, length = self.prepare_wav(wav_or_file)
+        wav, length = self.prepare_wav(wav_or_file, sample_rate=sample_rate)
         encoded, _ = self.forward(wav, length)
         encoded_pooled = nn.functional.avg_pool1d(
             encoded, kernel_size=encoded.shape[-1]

@@ -6,21 +6,22 @@ import torchaudio
 from torch import Tensor, nn, from_numpy, mean, float32, int16
 from numpy import ndarray, asarray
 
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 16_000
 
 
 def load_audio(
     audio: Union[str, Tensor, ndarray, Iterable],
     sample_rate: int = SAMPLE_RATE,
     return_format: str = "float",
+    result_sample_rate: int = SAMPLE_RATE,
 ) -> Tensor:
     """
-    Load an audio file and resample it to the specified sample rate.
+    Load an audio file and resample it to the specified sample rate (16kHz by default).
     If the input is not a string (path), it is assumed to be an iterable object
-    containing audio samples with provided sample rate (16kHz by default).
+    containing audio samples with provided sample rate.
     """
     if isinstance(audio, str):
-        return load_audio_from_path(audio, sample_rate, return_format)
+        return load_audio_from_path(audio, result_sample_rate, return_format)
 
     if not isinstance(audio, Tensor):
         if not isinstance(audio, ndarray):
@@ -43,6 +44,8 @@ def load_audio(
 
     if audio.ndim != 1:
         audio = mean(audio, dim=0)
+
+    audio = torchaudio.functional.resample(audio, orig_freq=sample_rate, new_freq=result_sample_rate)
 
     if audio.dtype != float32 and return_format == "float":
         audio = audio.to(dtype=float32)
