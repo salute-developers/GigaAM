@@ -20,6 +20,6 @@ setup(
             open("requirements.txt", "r", encoding="utf-8").read()
         )
     ],
-    extras_require={"longform": ["pyannote.audio", "pydub"]},
+    extras_require={"longform": ["pyannote.audio", "pydub", "silero_vad"]},
     include_package_data=True,
 )

@@ -1,18 +1,20 @@
 import warnings
-from typing import List, Optional
+from typing import Iterable, List, Optional, Union
 
 import numpy as np
 import onnxruntime as rt
 import torch
+from numpy import ndarray
+from torch import Tensor
 
 warnings.simplefilter("ignore", category=UserWarning)
 
 import gigaam
+from gigaam.preprocess import SAMPLE_RATE
 
 D_MODEL = 768
 DTYPE = np.float32
 MAX_LETTERS_PER_FRAME = 3
-SAMPLE_RATE = 16000
 FEAT_IN = 64
 PRED_HIDDEN = 320
 BLANK_IDX = 33
@@ -54,17 +56,18 @@ VOCAB = [
 
 
 def transcribe_sample(
-    wav_file: str,
+    wav_or_file: Union[str, Tensor, ndarray, Iterable],
     model_type: str,
     sessions: List[rt.InferenceSession],
     preprocessor: Optional[gigaam.preprocess.FeatureExtractor] = None,
+    sample_rate: int = SAMPLE_RATE,
 ) -> str:
     if preprocessor is None:
         preprocessor = gigaam.preprocess.FeatureExtractor(SAMPLE_RATE, FEAT_IN)
 
     assert model_type in ["ctc", "rnnt"], "Only `ctc` and `rnnt` inference supported"
 
-    input_signal = gigaam.load_audio(wav_file)
+    input_signal = gigaam.load_audio(wav_or_file, sample_rate=sample_rate)
     input_signal = preprocessor(
         input_signal.unsqueeze(0), torch.tensor([input_signal.shape[-1]])
     )[0].numpy()

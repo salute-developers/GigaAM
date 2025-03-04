@@ -127,7 +127,7 @@ The models were trained on publicly available Russian datasets:
    ```
 
    #### Long-form audio transcribation
-   1. Install external VAD dependencies ([pyannote.audio](https://github.com/pyannote/pyannote-audio) library) with 
+   1. Install external VAD dependencies ([pyannote.audio](https://github.com/pyannote/pyannote-audio) and [SileroVAD](https://github.com/snakers4/silero-vad) libraries) with 
       ```bash
       pip install gigaam[longform]
       ```
@@ -135,12 +135,13 @@ The models were trained on publicly available Russian datasets:
       * Generate [Hugging Face API token](https://huggingface.co/docs/hub/security-tokens)
       * Accept the conditions to access [pyannote/voice-activity-detection](https://huggingface.co/pyannote/voice-activity-detection) files and content.
       * Accept the conditions to access [pyannote/segmentation](https://huggingface.co/pyannote/segmentation) files and content.
+      * Or do not create HF token to use local SileroVAD instead of PyAnnote pipeline.
    3. Use the `model.transcribe_longform` method:
       ```python
       import os
       import gigaam
 
-      os.environ["HF_TOKEN"] = "<HF_TOKEN>"
+      os.environ["HF_TOKEN"] = "<HF_TOKEN>" # Remove this line to use SileroVAD
 
       model = gigaam.load_model("ctc")
       recognition_result = model.transcribe_longform("long_example.wav")
