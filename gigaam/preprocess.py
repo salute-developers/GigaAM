@@ -1,26 +1,23 @@
 from subprocess import CalledProcessError, run
-from typing import Tuple
+from typing import Tuple, Union
 
 import torch
 import torchaudio
+import numpy as np
 from torch import Tensor, nn
+from numpy.typing import NDArray
 
 SAMPLE_RATE = 16000
 
 
-def load_audio(
-    audio_path: str, sample_rate: int = SAMPLE_RATE, return_format: str = "float"
-) -> Tensor:
-    """
-    Load an audio file and resample it to the specified sample rate.
-    """
+def load_audio_file(path: str, sample_rate: int):
     cmd = [
         "ffmpeg",
         "-nostdin",
         "-threads",
         "0",
         "-i",
-        audio_path,
+        path,
         "-f",
         "s16le",
         "-ac",
@@ -35,11 +32,30 @@ def load_audio(
         audio = run(cmd, capture_output=True, check=True).stdout
     except CalledProcessError as exc:
         raise RuntimeError("Failed to load audio") from exc
+    
+    return audio
+
+
+def load_audio(
+    audio: Union[str, NDArray],
+    sample_rate: int = SAMPLE_RATE,
+    return_format: str = "float",
+) -> Tensor:
+    """
+    Load an audio file and resample it to the specified sample rate.
+    """
+    if isinstance(audio, str):
+        audio_bytes = load_audio_file(audio, sample_rate)
+    elif isinstance(audio, np.ndarray):
+        audio = (audio.flatten() * 32767).astype(np.int16)
+        audio_bytes = audio.tobytes()
+    else:
+        raise TypeError("Argument 'audio' must be type of str | np.ndarray")
 
     if return_format == "float":
-        return torch.frombuffer(audio, dtype=torch.int16).float() / 32768.0
+        return torch.frombuffer(audio_bytes, dtype=torch.int16).float() / 32768.0
 
-    return torch.frombuffer(audio, dtype=torch.int16)
+    return torch.frombuffer(audio_bytes, dtype=torch.int16)
 
 
 class SpecScaler(nn.Module):

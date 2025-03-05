@@ -4,6 +4,7 @@ import hydra
 import omegaconf
 import torch
 from torch import Tensor, nn
+from numpy.typing import NDArray
 
 from .preprocess import SAMPLE_RATE, load_audio
 from .utils import onnx_converter
@@ -44,7 +45,7 @@ class GigaAM(nn.Module):
     def _dtype(self) -> torch.dtype:
         return next(self.parameters()).dtype
 
-    def prepare_wav(self, wav_file: str) -> Tuple[Tensor, Tensor]:
+    def prepare_wav(self, wav_file: Union[str, NDArray]) -> Tuple[Tensor, Tensor]:
         """
         Prepare an audio file for processing by loading it onto
         the correct device and converting its format.
@@ -85,7 +86,7 @@ class GigaAMASR(GigaAM):
         self.decoding = hydra.utils.instantiate(self.cfg.decoding)
 
     @torch.inference_mode()
-    def transcribe(self, wav_file: str) -> str:
+    def transcribe(self, wav_file: Union[str, NDArray]) -> str:
         """
         Transcribes a short audio file into text.
         """
@@ -140,7 +141,7 @@ class GigaAMASR(GigaAM):
 
     @torch.inference_mode()
     def transcribe_longform(
-        self, wav_file: str, **kwargs
+        self, wav_file: Union[str, NDArray], **kwargs
     ) -> List[Dict[str, Union[str, Tuple[float, float]]]]:
         """
         Transcribes a long audio file by splitting it into segments and
