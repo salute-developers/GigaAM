@@ -13,7 +13,7 @@ from .utils import format_time
 # Default cache directory
 _CACHE_DIR = os.path.expanduser("~/.cache/gigaam")
 # Url with model checkpoints
-_URL_DIR = "https://n-ws-q0bez.s3pd12.sbercloud.ru/b-ws-q0bez-jpv/GigaAM"
+_URL_DIR = "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM"
 _MODEL_NAMES = [
     "ctc",
     "rnnt",
