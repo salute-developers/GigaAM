@@ -83,17 +83,19 @@ def segment_audio(
         if (
             curr_duration > min_duration and start - curr_end > new_chunk_threshold
         ) or (curr_duration + (end - curr_end) > max_duration):
-
-            start_ms = int(curr_start * 1000)
-            end_ms = int(curr_end * 1000)
-            segments.append(audiosegment_to_tensor(audio[start_ms:end_ms]))
-            boundaries.append((curr_start, curr_end))
+            if curr_end > curr_start:
+                start_ms = int(curr_start * 1000)
+                end_ms = int(curr_end * 1000)
+                tensor = audiosegment_to_tensor(audio[start_ms:end_ms])
+                if tensor.shape[-1] > 0:
+                    segments.append(tensor)
+                    boundaries.append((curr_start, curr_end))
             curr_start = start
 
         curr_end = end
         curr_duration = curr_end - curr_start
 
-    if curr_duration != 0:
+    if curr_duration != 0 and curr_end > curr_start:
         start_ms = int(curr_start * 1000)
         end_ms = int(curr_end * 1000)
         segments.append(audiosegment_to_tensor(audio[start_ms:end_ms]))
