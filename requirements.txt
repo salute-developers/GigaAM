@@ -3,8 +3,8 @@ numpy
 omegaconf<=2.3.0
 pydub<=0.25.1
 sentencepiece<=0.2.0
-torch<=2.5.1
-torchaudio<=2.5.1
+torch
+torchaudio
 onnx
 onnxruntime
 tqdm
