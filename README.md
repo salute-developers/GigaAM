@@ -3,7 +3,7 @@
 ![plot](./gigaam_scheme.svg)
 
 ## Latest News
-* 2025/06 — Our [research paper on GigaAM](https://arxiv.org/abs/2506.01192) was accepted to Interspeech 2025!
+* 2025/06 — Our [research paper on GigaAM](https://arxiv.org/abs/2506.01192) was accepted to InterSpeech 2025!
 * 2024/12 — [MIT License](./LICENSE), GigaAM-v2 (**-15%** and **-12%** WER Reduction for CTC and RNN-T models, respectively), [ONNX export support](#onnx-inference-example)
 * 2024/05 — GigaAM-RNNT (**-19%** WER Reduction), [long-form inference using external Voice Activity Detection](#long-form-audio-transcribation)
 * 2024/04 — GigaAM Release: GigaAM-CTC ([SoTA Speech Recognition model for the Russian language](#performance-metrics-word-error-rate)), [GigaAM-Emo](#gigaam-emo-emotion-recognition)
