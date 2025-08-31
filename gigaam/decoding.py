@@ -64,8 +64,8 @@ class CTCGreedyDecoding:
         skip_mask[:, 1:] = torch.logical_and(
             skip_mask[:, 1:], labels[:, 1:] != labels[:, :-1]
         )
-        for length in lengths:
-            skip_mask[length:] = 0
+        for i, length in enumerate(lengths):
+            skip_mask[i, length:] = 0
 
         pred_texts: List[str] = []
         for i in range(b):
