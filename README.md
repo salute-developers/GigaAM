@@ -1,5 +1,10 @@
 # GigaAM: the family of open-source acoustic models for speech processing
 
+> [!Note]
+> This repository is an upgraded version of the original [GigaAM repository](https://github.com/salute-developers/GigaAM.git) with new features, including:
+> - Local SileroVAD support for long-form audio transcription as an alternative to the PyAnnote pipeline
+> - Support for using Numpy arrays and PyTorch tensors as input audio data, providing an additional parameter `sample_rate` for performing audio resampling if necessary when using these input types instead of file paths
+
 ![plot](./gigaam_scheme.svg)
 
 ## Latest News
@@ -45,7 +50,7 @@ This repository includes:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/salute-developers/GigaAM.git
+   git clone https://github.com/KalininVD/GigaAM-upgraded.git GigaAM
    cd GigaAM
    ```
 
