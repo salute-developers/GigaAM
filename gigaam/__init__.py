@@ -115,7 +115,7 @@ def load_model(
     model_name, model_path = _download_model(model_name, download_root)
     tokenizer_path = _download_tokenizer(model_name, download_root)
 
-    checkpoint = torch.load(model_path, map_location="cpu")
+    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
 
     if use_flash is not None:
         checkpoint["cfg"].encoder.flash_attn = use_flash
