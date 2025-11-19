@@ -106,7 +106,7 @@ class RNNTGreedyDecoding:
                 if k == self.blank_id:
                     not_blank = False
                 else:
-                    hyp.append(k)
+                    hyp.append(int(k))
                     dec_state = hidden
                     last_label = torch.tensor([[hyp[-1]]]).to(x.device)
                     new_symbols += 1

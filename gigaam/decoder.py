@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -46,16 +46,16 @@ class RNNTJoint(nn.Module):
         pred = self.pred(decoder_out).unsqueeze(1)
         return self.joint_net(enc + pred).log_softmax(-1)
 
-    def input_example(self):
+    def input_example(self) -> Tuple[Tensor, Tensor]:
         device = next(self.parameters()).device
         enc = torch.zeros(1, self.enc_hidden, 1)
         dec = torch.zeros(1, self.pred_hidden, 1)
         return enc.float().to(device), dec.float().to(device)
 
-    def input_names(self):
+    def input_names(self) -> List[str]:
         return ["enc", "dec"]
 
-    def output_names(self):
+    def output_names(self) -> List[str]:
         return ["joint"]
 
     def forward(self, enc: Tensor, dec: Tensor) -> Tensor:
@@ -94,17 +94,17 @@ class RNNTDecoder(nn.Module):
         g, hid = self.lstm(emb.transpose(0, 1), state)
         return g.transpose(0, 1), hid
 
-    def input_example(self):
+    def input_example(self) -> Tuple[Tensor, Tensor, Tensor]:
         device = next(self.parameters()).device
         label = torch.tensor([[0]]).to(device)
         hidden_h = torch.zeros(1, 1, self.pred_hidden).to(device)
         hidden_c = torch.zeros(1, 1, self.pred_hidden).to(device)
         return label, hidden_h, hidden_c
 
-    def input_names(self):
+    def input_names(self) -> List[str]:
         return ["x", "h", "c"]
 
-    def output_names(self):
+    def output_names(self) -> List[str]:
         return ["dec", "h", "c"]
 
     def forward(self, x: Tensor, h: Tensor, c: Tensor) -> Tuple[Tensor, Tensor, Tensor]:

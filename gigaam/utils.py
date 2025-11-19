@@ -1,18 +1,22 @@
+import os
 import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 from torch.jit import TracerWarning
+
+from .preprocess import load_audio
 
 
 def onnx_converter(
     model_name: str,
     module: torch.nn.Module,
     out_dir: str,
-    inputs: Optional[Tuple[Tensor]] = None,
+    inputs: Optional[Tuple[Tensor, ...]] = None,
     input_names: Optional[List[str]] = None,
     output_names: Optional[List[str]] = None,
     dynamic_axes: Optional[
@@ -21,17 +25,18 @@ def onnx_converter(
     opset_version: int = 17,
 ):
     if inputs is None:
-        inputs = module.input_example()
+        inputs = module.input_example()  # type: ignore[operator]
     if input_names is None:
-        input_names = module.input_names()
+        input_names = module.input_names()  # type: ignore[operator]
     if output_names is None:
-        output_names = module.output_names()
+        output_names = module.output_names()  # type: ignore[operator]
 
     Path(out_dir).mkdir(exist_ok=True, parents=True)
     out_path = str(Path(out_dir) / f"{model_name}.onnx")
     saved_dtype = next(module.parameters()).dtype
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=(UserWarning, TracerWarning))
+    with warnings.catch_warnings(), torch.no_grad():
+        warnings.simplefilter("ignore", category=UserWarning)
+        warnings.simplefilter("ignore", category=TracerWarning)
         torch.onnx.export(
             module.to(torch.float32),
             inputs,
@@ -41,7 +46,7 @@ def onnx_converter(
             dynamic_axes=dynamic_axes,
             opset_version=opset_version,
         )
-    print(f"Succesfully ported onnx {model_name} to {out_path}.")
+    print(f"Successfully ported onnx {model_name} to {out_path}.")
     module.to(saved_dtype)
 
 
@@ -131,3 +136,63 @@ def apply_masked_flash_attn(
     )
 
     return scores
+
+
+def download_short_audio():
+    """Download test audio file if not exists"""
+    audio_file = "example.wav"
+    if not os.path.exists(audio_file):
+        os.system(
+            'wget -O example.wav "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/example.wav"'
+        )
+    assert os.path.exists(audio_file), "Short audio file not found"
+    return audio_file
+
+
+def download_long_audio():
+    """Download test audio file if not exists"""
+    audio_file = "long_example.wav"
+    if not os.path.exists(audio_file):
+        os.system(
+            'wget -O long_example.wav "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/long_example.wav"'
+        )
+    assert os.path.exists(audio_file), "Long audio file not found"
+    return audio_file
+
+
+class AudioDataset(torch.utils.data.Dataset):
+    """
+    Helper class for creating batched inputs
+    """
+
+    def __init__(self, lst: List[Union[str, np.ndarray, torch.Tensor]]):
+        if len(lst) == 0:
+            raise ValueError("AudioDataset cannot be initialized with an empty list")
+        assert isinstance(
+            lst[0], (str, np.ndarray, torch.Tensor)
+        ), f"Unexpected dtype: {type(lst[0])}"
+        self.lst = lst
+
+    def __len__(self):
+        return len(self.lst)
+
+    def __getitem__(self, idx):
+        item = self.lst[idx]
+        if isinstance(item, str):
+            wav_tns = load_audio(item)
+        elif isinstance(item, np.ndarray):
+            wav_tns = torch.from_numpy(item)
+        elif isinstance(item, torch.Tensor):
+            wav_tns = item
+        else:
+            raise RuntimeError(f"Unexpected sample type: {type(item)} at idx={idx}")
+        return wav_tns
+
+    @staticmethod
+    def collate(wavs):
+        lengths = torch.tensor([len(wav) for wav in wavs])
+        max_len = lengths.max().item()
+        wav_tns = torch.zeros(len(wavs), max_len, dtype=wavs[0].dtype)
+        for idx, wav in enumerate(wavs):
+            wav_tns[idx, : wav.shape[-1]] = wav.squeeze()
+        return wav_tns, lengths
