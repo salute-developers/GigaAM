@@ -23,10 +23,8 @@ class GigaAM(nn.Module):
         self.encoder = hydra.utils.instantiate(self.cfg.encoder)
 
     def forward(
-        self,
-        features: Tensor,
-        feature_lengths: Tensor,
-    ) -> Tensor:
+        self, features: Tensor, feature_lengths: Tensor
+    ) -> Tuple[Tensor, Tensor]:
         """
         Perform forward pass through the preprocessor and encoder.
         """
@@ -66,6 +64,13 @@ class GigaAM(nn.Module):
         """
         Export onnx model encoder to the specified dir.
         """
+        self._to_onnx(dir_path)
+        omegaconf.OmegaConf.save(self.cfg, f"{dir_path}/{self.cfg.model_name}.yaml")
+
+    def _to_onnx(self, dir_path: str = ".") -> None:
+        """
+        Export onnx model encoder to the specified dir.
+        """
         onnx_converter(
             model_name=f"{self.cfg.model_name}_encoder",
             out_dir=dir_path,
@@ -90,7 +95,7 @@ class GigaAMASR(GigaAM):
         Transcribes a short audio file into text.
         """
         wav, length = self.prepare_wav(wav_file)
-        if length > LONGFORM_THRESHOLD:
+        if length.item() > LONGFORM_THRESHOLD:
             raise ValueError("Too long wav file, use 'transcribe_longform' method.")
 
         encoded, encoded_len = self.forward(wav, length)
@@ -102,7 +107,7 @@ class GigaAMASR(GigaAM):
         """
         return self.head(self.encoder(features, feature_lengths)[0])
 
-    def to_onnx(self, dir_path: str = ".") -> None:
+    def _to_onnx(self, dir_path: str = ".") -> None:
         """
         Export onnx ASR model.
         `ctc`:  exported entirely in encoder-decoder format.
@@ -110,23 +115,25 @@ class GigaAMASR(GigaAM):
         """
         if "ctc" in self.cfg.model_name:
             saved_forward = self.forward
-            self.forward = self.forward_for_export
-            onnx_converter(
-                model_name=self.cfg.model_name,
-                out_dir=dir_path,
-                module=self,
-                inputs=self.encoder.input_example(),
-                input_names=["features", "feature_lengths"],
-                output_names=["log_probs"],
-                dynamic_axes={
-                    "features": {0: "batch_size", 2: "seq_len"},
-                    "feature_lengths": {0: "batch_size"},
-                    "log_probs": {0: "batch_size", 1: "seq_len"},
-                },
-            )
-            self.forward = saved_forward
+            self.forward = self.forward_for_export  # type: ignore[assignment, method-assign]
+            try:
+                onnx_converter(
+                    model_name=self.cfg.model_name,
+                    out_dir=dir_path,
+                    module=self,
+                    inputs=self.encoder.input_example(),
+                    input_names=["features", "feature_lengths"],
+                    output_names=["log_probs"],
+                    dynamic_axes={
+                        "features": {0: "batch_size", 2: "seq_len"},
+                        "feature_lengths": {0: "batch_size"},
+                        "log_probs": {0: "batch_size", 1: "seq_len"},
+                    },
+                )
+            finally:
+                self.forward = saved_forward  # type: ignore[assignment, method-assign]
         else:
-            super().to_onnx(dir_path)  # export encoder
+            super()._to_onnx(dir_path)  # export encoder
             onnx_converter(
                 model_name=f"{self.cfg.model_name}_decoder",
                 out_dir=dir_path,
@@ -146,12 +153,11 @@ class GigaAMASR(GigaAM):
         Transcribes a long audio file by splitting it into segments and
         then transcribing each segment.
         """
-        from .vad_utils import segment_audio
+        from .vad_utils import segment_audio_file
 
         transcribed_segments = []
-        wav = load_audio(wav_file, return_format="int")
-        segments, boundaries = segment_audio(
-            wav, SAMPLE_RATE, device=self._device, **kwargs
+        segments, boundaries = segment_audio_file(
+            wav_file, SAMPLE_RATE, device=self._device, **kwargs
         )
         for segment, segment_boundaries in zip(segments, boundaries):
             wav = segment.to(self._device).unsqueeze(0).to(self._dtype)
@@ -159,10 +165,7 @@ class GigaAMASR(GigaAM):
             encoded, encoded_len = self.forward(wav, length)
             result = self.decoding.decode(self.head, encoded, encoded_len)[0]
             transcribed_segments.append(
-                {
-                    "transcription": result,
-                    "boundaries": segment_boundaries,
-                }
+                {"transcription": result, "boundaries": segment_boundaries}
             )
         return transcribed_segments
 
@@ -197,28 +200,28 @@ class GigaAMEmo(GigaAM):
         Encoder-decoder forward to save model entirely in onnx format.
         """
         encoded, _ = self.encoder(features, feature_lengths)
-        enc_pooled = nn.functional.avg_pool1d(
-            encoded, kernel_size=encoded.shape[-1].item()
-        ).squeeze(-1)
-        return nn.functional.softmax(self.head(enc_pooled)[0], dim=-1)
+        enc_pooled = encoded.mean(dim=-1)
+        return nn.functional.softmax(self.head(enc_pooled), dim=-1)
 
-    def to_onnx(self, dir_path: str = ".") -> None:
+    def _to_onnx(self, dir_path: str = ".") -> None:
         """
         Export onnx Emo model.
         """
         saved_forward = self.forward
-        self.forward = self.forward_for_export
-        onnx_converter(
-            model_name=self.cfg.model_name,
-            out_dir=dir_path,
-            module=self,
-            inputs=self.encoder.input_example(),
-            input_names=["features", "feature_lengths"],
-            output_names=["probs"],
-            dynamic_axes={
-                "features": {0: "batch_size", 2: "seq_len"},
-                "feature_lengths": {0: "batch_size"},
-                "probs": {0: "batch_size", 1: "seq_len"},
-            },
-        )
-        self.forward = saved_forward
+        self.forward = self.forward_for_export  # type: ignore[assignment, method-assign]
+        try:
+            onnx_converter(
+                model_name=self.cfg.model_name,
+                out_dir=dir_path,
+                module=self,
+                inputs=self.encoder.input_example(),
+                input_names=["features", "feature_lengths"],
+                output_names=["probs"],
+                dynamic_axes={
+                    "features": {0: "batch_size", 2: "seq_len"},
+                    "feature_lengths": {0: "batch_size"},
+                    "probs": {0: "batch_size", 1: "seq_len"},
+                },
+            )
+        finally:
+            self.forward = saved_forward  # type: ignore[assignment, method-assign]

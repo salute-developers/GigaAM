@@ -1,3 +1,4 @@
+import warnings
 from subprocess import CalledProcessError, run
 from typing import Tuple
 
@@ -8,9 +9,7 @@ from torch import Tensor, nn
 SAMPLE_RATE = 16000
 
 
-def load_audio(
-    audio_path: str, sample_rate: int = SAMPLE_RATE, return_format: str = "float"
-) -> Tensor:
+def load_audio(audio_path: str, sample_rate: int = SAMPLE_RATE) -> Tensor:
     """
     Load an audio file and resample it to the specified sample rate.
     """
@@ -36,10 +35,9 @@ def load_audio(
     except CalledProcessError as exc:
         raise RuntimeError("Failed to load audio") from exc
 
-    if return_format == "float":
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)
         return torch.frombuffer(audio, dtype=torch.int16).float() / 32768.0
-
-    return torch.frombuffer(audio, dtype=torch.int16)
 
 
 class SpecScaler(nn.Module):
@@ -59,16 +57,20 @@ class FeatureExtractor(nn.Module):
     and applies logarithmic scaling.
     """
 
-    def __init__(self, sample_rate: int, features: int):
+    def __init__(self, sample_rate: int, features: int, **kwargs):
         super().__init__()
-        self.hop_length = sample_rate // 100
+        self.hop_length = kwargs.get("hop_length", sample_rate // 100)
+        self.win_length = kwargs.get("win_length", sample_rate // 40)
+        self.n_fft = kwargs.get("n_fft", sample_rate // 40)
+        self.center = kwargs.get("center", True)
         self.featurizer = nn.Sequential(
             torchaudio.transforms.MelSpectrogram(
                 sample_rate=sample_rate,
-                n_fft=sample_rate // 40,
-                win_length=sample_rate // 40,
-                hop_length=self.hop_length,
                 n_mels=features,
+                win_length=self.win_length,
+                hop_length=self.hop_length,
+                n_fft=self.n_fft,
+                center=self.center,
             ),
             SpecScaler(),
         )
@@ -77,7 +79,17 @@ class FeatureExtractor(nn.Module):
         """
         Calculates the output length after the feature extraction process.
         """
-        return input_lengths.div(self.hop_length, rounding_mode="floor").add(1).long()
+        if self.center:
+            return (
+                input_lengths.div(self.hop_length, rounding_mode="floor").add(1).long()
+            )
+        else:
+            return (
+                (input_lengths - self.win_length)
+                .div(self.hop_length, rounding_mode="floor")
+                .add(1)
+                .long()
+            )
 
     def forward(self, input_signal: Tensor, length: Tensor) -> Tuple[Tensor, Tensor]:
         """

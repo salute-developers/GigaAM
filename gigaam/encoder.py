@@ -1,8 +1,9 @@
 import math
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 try:
@@ -23,22 +24,29 @@ class StridingSubsampling(nn.Module):
 
     def __init__(
         self,
+        subsampling: str,
+        kernel_size: int,
         subsampling_factor: int,
         feat_in: int,
         feat_out: int,
         conv_channels: int,
     ):
         super().__init__()
+        self.subsampling_type = subsampling
+        assert self.subsampling_type in ["conv1d", "conv2d"]
         self._sampling_num = int(math.log(subsampling_factor, 2))
         self._stride = 2
-        self._kernel_size = 3
+        self._kernel_size = kernel_size
         self._padding = (self._kernel_size - 1) // 2
 
         layers: List[nn.Module] = []
-        in_channels = 1
+        in_channels = 1 if self.subsampling_type == "conv2d" else feat_in
+        subs_conv_class = (
+            torch.nn.Conv2d if self.subsampling_type == "conv2d" else torch.nn.Conv1d
+        )
         for _ in range(self._sampling_num):
             layers.append(
-                torch.nn.Conv2d(
+                subs_conv_class(
                     in_channels=in_channels,
                     out_channels=conv_channels,
                     kernel_size=self._kernel_size,
@@ -50,7 +58,8 @@ class StridingSubsampling(nn.Module):
             in_channels = conv_channels
 
         out_length = self.calc_output_length(torch.tensor(feat_in))
-        self.out = torch.nn.Linear(conv_channels * int(out_length), feat_out)
+        if self.subsampling_type == "conv2d":
+            self.out = torch.nn.Linear(conv_channels * int(out_length), feat_out)
         self.conv = torch.nn.Sequential(*layers)
 
     def calc_output_length(self, lengths: Tensor) -> Tensor:
@@ -65,9 +74,12 @@ class StridingSubsampling(nn.Module):
         return lengths.to(dtype=torch.int)
 
     def forward(self, x: Tensor, lengths: Tensor) -> Tuple[Tensor, Tensor]:
-        x = self.conv(x.unsqueeze(1))
-        b, _, t, _ = x.size()
-        x = self.out(x.transpose(1, 2).reshape(b, t, -1))
+        if self.subsampling_type == "conv2d":
+            x = self.conv(x.unsqueeze(1))
+            b, _, t, _ = x.size()
+            x = self.out(x.transpose(1, 2).reshape(b, t, -1))
+        else:
+            x = self.conv(x.transpose(1, 2)).transpose(1, 2)
         return x, self.calc_output_length(lengths)
 
 
@@ -76,7 +88,9 @@ class MultiHeadAttention(nn.Module, ABC):
     Base class of Multi-Head Attention Mechanisms.
     """
 
-    def __init__(self, n_head: int, n_feat: int, flash_attn=False):
+    def __init__(
+        self, n_head: int, n_feat: int, flash_attn=False, torch_sdpa_attn=False
+    ):
         super().__init__()
         assert n_feat % n_head == 0
         self.d_k = n_feat // n_head
@@ -86,6 +100,7 @@ class MultiHeadAttention(nn.Module, ABC):
         self.linear_v = nn.Linear(n_feat, n_feat)
         self.linear_out = nn.Linear(n_feat, n_feat)
         self.flash_attn = flash_attn
+        self.torch_sdpa_attn = torch_sdpa_attn
         if self.flash_attn and not IMPORT_FLASH:
             raise RuntimeError(
                 f"flash_attn_func was imported with err {IMPORT_FLASH_ERR}. "
@@ -192,19 +207,26 @@ class RotaryPositionMultiHeadAttention(MultiHeadAttention):
             value.view(t, b, self.h * self.d_k).transpose(0, 1),
         )
 
-        if not self.flash_attn:
-            scores = torch.matmul(q, k.transpose(-2, -1) / math.sqrt(self.d_k))
-            out = self.forward_attention(v, scores, mask)
-        else:
+        if self.flash_attn:
             if mask is None:
                 scores = flash_attn_func(q, k, v)
             else:
                 scores = apply_masked_flash_attn(q, k, v, mask, self.h, self.d_k)
-
             scores = scores.view(b, -1, self.h * self.d_k)
-            out = self.linear_out(scores)
-
-        return out
+            return self.linear_out(scores)
+        elif self.torch_sdpa_attn:
+            attn_mask = None if mask is None else ~mask.unsqueeze(1)
+            attn_output = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+            )
+            attn_output = attn_output.transpose(1, 2).reshape(b, t, self.h * self.d_k)
+            return self.linear_out(attn_output)
+        else:
+            scores = torch.matmul(q, k.transpose(-2, -1) / math.sqrt(self.d_k))
+            return self.forward_attention(v, scores, mask)
 
 
 class PositionalEncoding(nn.Module, ABC):
@@ -300,9 +322,12 @@ class ConformerConvolution(nn.Module):
         self,
         d_model: int,
         kernel_size: int,
+        norm_type: str,
     ):
         super().__init__()
         assert (kernel_size - 1) % 2 == 0
+        assert norm_type in ["batch_norm", "layer_norm"]
+        self.norm_type = norm_type
         self.pointwise_conv1 = nn.Conv1d(d_model, d_model * 2, kernel_size=1)
         self.depthwise_conv = nn.Conv1d(
             in_channels=d_model,
@@ -312,7 +337,11 @@ class ConformerConvolution(nn.Module):
             groups=d_model,
             bias=True,
         )
-        self.batch_norm = nn.BatchNorm1d(d_model)
+        self.batch_norm = (
+            nn.BatchNorm1d(d_model)
+            if norm_type == "batch_norm"
+            else nn.LayerNorm(d_model)
+        )
         self.activation = nn.SiLU()
         self.pointwise_conv2 = nn.Conv1d(d_model, d_model, kernel_size=1)
 
@@ -323,7 +352,10 @@ class ConformerConvolution(nn.Module):
         if pad_mask is not None:
             x = x.masked_fill(pad_mask.unsqueeze(1), 0.0)
         x = self.depthwise_conv(x)
-        x = self.batch_norm(x)
+        if self.norm_type == "batch_norm":
+            x = self.batch_norm(x)
+        else:
+            x = self.batch_norm(x.transpose(1, 2)).transpose(1, 2)
         x = self.activation(x)
         x = self.pointwise_conv2(x)
         return x.transpose(1, 2)
@@ -358,6 +390,7 @@ class ConformerLayer(nn.Module):
         d_ff: int,
         self_attention_model: str,
         n_heads: int = 16,
+        conv_norm_type: str = "batch_norm",
         conv_kernel_size: int = 31,
         flash_attn: bool = False,
     ):
@@ -369,6 +402,7 @@ class ConformerLayer(nn.Module):
         self.conv = ConformerConvolution(
             d_model=d_model,
             kernel_size=conv_kernel_size,
+            norm_type=conv_norm_type,
         )
         self.norm_self_att = nn.LayerNorm(d_model)
         if self_attention_model == "rotary":
@@ -376,6 +410,7 @@ class ConformerLayer(nn.Module):
                 n_head=n_heads,
                 n_feat=d_model,
                 flash_attn=flash_attn,
+                torch_sdpa_attn=not flash_attn,
             )
         else:
             assert not flash_attn, "Not supported flash_attn for rel_pos"
@@ -429,11 +464,14 @@ class ConformerEncoder(nn.Module):
         feat_in: int = 64,
         n_layers: int = 16,
         d_model: int = 768,
+        subsampling: str = "conv2d",
+        subs_kernel_size: int = 3,
         subsampling_factor: int = 4,
         ff_expansion_factor: int = 4,
         self_attention_model: str = "rotary",
         n_heads: int = 16,
         pos_emb_max_len: int = 5000,
+        conv_norm_type: str = "batch_norm",
         conv_kernel_size: int = 31,
         flash_attn: bool = False,
     ):
@@ -445,14 +483,17 @@ class ConformerEncoder(nn.Module):
         ], f"Not supported attn = {self_attention_model}"
 
         self.pre_encode = StridingSubsampling(
+            subsampling=subsampling,
+            kernel_size=subs_kernel_size,
             subsampling_factor=subsampling_factor,
             feat_in=feat_in,
             feat_out=d_model,
             conv_channels=d_model,
         )
 
+        self.pos_emb_max_len = pos_emb_max_len
         if self_attention_model == "rotary":
-            self.pos_enc: nn.Module = RotaryPositionalEmbedding(
+            self.pos_enc: PositionalEncoding = RotaryPositionalEmbedding(
                 d_model // n_heads, pos_emb_max_len
             )
         else:
@@ -465,30 +506,29 @@ class ConformerEncoder(nn.Module):
                 d_ff=d_model * ff_expansion_factor,
                 self_attention_model=self_attention_model,
                 n_heads=n_heads,
+                conv_norm_type=conv_norm_type,
                 conv_kernel_size=conv_kernel_size,
                 flash_attn=flash_attn,
             )
             self.layers.append(layer)
 
-        self.pos_enc.extend_pe(pos_emb_max_len, next(self.parameters()).device)
-
     def input_example(
         self,
         batch_size: int = 1,
         seqlen: int = 200,
-    ):
+    ) -> Tuple[Tensor, Tensor]:
         device = next(self.parameters()).device
         features = torch.zeros(batch_size, self.feat_in, seqlen)
         feature_lengths = torch.full([batch_size], features.shape[-1])
         return features.float().to(device), feature_lengths.to(device)
 
-    def input_names(self):
+    def input_names(self) -> List[str]:
         return ["audio_signal", "length"]
 
-    def output_names(self):
+    def output_names(self) -> List[str]:
         return ["encoded", "encoded_len"]
 
-    def dynamic_axes(self):
+    def dynamic_axes(self) -> Dict[str, Dict[int, str]]:
         return {
             "audio_signal": {0: "batch_size", 2: "seq_len"},
             "length": {0: "batch_size"},
@@ -497,6 +537,9 @@ class ConformerEncoder(nn.Module):
         }
 
     def forward(self, audio_signal: Tensor, length: Tensor) -> Tuple[Tensor, Tensor]:
+        if not hasattr(self.pos_enc, "pe"):
+            self.pos_enc.extend_pe(self.pos_emb_max_len, audio_signal.device)
+
         audio_signal, length = self.pre_encode(
             x=audio_signal.transpose(1, 2), lengths=length
         )

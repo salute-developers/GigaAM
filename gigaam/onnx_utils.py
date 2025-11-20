@@ -1,70 +1,38 @@
 import warnings
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 
+import hydra
 import numpy as np
+import omegaconf
 import onnxruntime as rt
 import torch
 
+from .decoding import Tokenizer
+from .preprocess import FeatureExtractor, load_audio
+
 warnings.simplefilter("ignore", category=UserWarning)
 
-import gigaam
 
-D_MODEL = 768
 DTYPE = np.float32
 MAX_LETTERS_PER_FRAME = 3
-SAMPLE_RATE = 16000
-FEAT_IN = 64
-PRED_HIDDEN = 320
-BLANK_IDX = 33
-VOCAB = [
-    " ",
-    "а",
-    "б",
-    "в",
-    "г",
-    "д",
-    "е",
-    "ж",
-    "з",
-    "и",
-    "й",
-    "к",
-    "л",
-    "м",
-    "н",
-    "о",
-    "п",
-    "р",
-    "с",
-    "т",
-    "у",
-    "ф",
-    "х",
-    "ц",
-    "ч",
-    "ш",
-    "щ",
-    "ъ",
-    "ы",
-    "ь",
-    "э",
-    "ю",
-    "я",
-]
 
 
-def transcribe_sample(
+def infer_onnx(
     wav_file: str,
-    model_type: str,
+    model_cfg: omegaconf.DictConfig,
     sessions: List[rt.InferenceSession],
-    preprocessor: Optional[gigaam.preprocess.FeatureExtractor] = None,
-) -> str:
+    preprocessor: Optional[FeatureExtractor] = None,
+    tokenizer: Optional[Tokenizer] = None,
+) -> Union[str, np.ndarray]:
+    """Run ONNX sessions for the model, requires preprocessor instantiating"""
+    model_name = model_cfg.model_name
+
     if preprocessor is None:
-        preprocessor = gigaam.preprocess.FeatureExtractor(SAMPLE_RATE, FEAT_IN)
+        preprocessor = hydra.utils.instantiate(model_cfg.preprocessor)
+    if tokenizer is None and ("ctc" in model_name or "rnnt" in model_name):
+        tokenizer = hydra.utils.instantiate(model_cfg.decoding).tokenizer
 
-    assert model_type in ["ctc", "rnnt"], "Only `ctc` and `rnnt` inference supported"
-
-    input_signal = gigaam.load_audio(wav_file)
+    input_signal = load_audio(wav_file)
     input_signal = preprocessor(
         input_signal.unsqueeze(0), torch.tensor([input_signal.shape[-1]])
     )[0].numpy()
@@ -81,18 +49,22 @@ def transcribe_sample(
         [node.name for node in enc_sess.get_outputs()], enc_inputs
     )[0]
 
+    if "emo" in model_name or "ssl" in model_name:
+        return enc_features
+
+    blank_idx = len(tokenizer)
     token_ids = []
-    prev_token = BLANK_IDX
-    if model_type == "ctc":
-        prev_tok = BLANK_IDX
+    prev_token = blank_idx
+    if "ctc" in model_name:
+        prev_tok = blank_idx
         for tok in enc_features.argmax(-1).squeeze().tolist():
-            if (tok != prev_tok or prev_tok == BLANK_IDX) and tok != BLANK_IDX:
+            if (tok != prev_tok or prev_tok == blank_idx) and tok != blank_idx:
                 token_ids.append(tok)
             prev_tok = tok
     else:
         pred_states = [
-            np.zeros(shape=(1, 1, PRED_HIDDEN), dtype=DTYPE),
-            np.zeros(shape=(1, 1, PRED_HIDDEN), dtype=DTYPE),
+            np.zeros(shape=(1, 1, model_cfg.head.decoder.pred_hidden), dtype=DTYPE),
+            np.zeros(shape=(1, 1, model_cfg.head.decoder.pred_hidden), dtype=DTYPE),
         ]
         pred_sess, joint_sess = sessions[1:]
         for j in range(enc_features.shape[-1]):
@@ -101,7 +73,7 @@ def transcribe_sample(
                 pred_inputs = {
                     node.name: data
                     for (node, data) in zip(
-                        pred_sess.get_inputs(), [[[prev_token]]] + pred_states
+                        pred_sess.get_inputs(), [np.array([[prev_token]])] + pred_states
                     )
                 }
                 pred_outputs = pred_sess.run(
@@ -120,7 +92,7 @@ def transcribe_sample(
                 )
                 token = log_probs[0].argmax(-1)[0][0]
 
-                if token != BLANK_IDX:
+                if token != blank_idx:
                     prev_token = int(token)
                     pred_states = pred_outputs[1:]
                     token_ids.append(int(token))
@@ -128,39 +100,51 @@ def transcribe_sample(
                 else:
                     break
 
-    return "".join(VOCAB[tok] for tok in token_ids)
+    return tokenizer.decode(token_ids)
 
 
-def load_onnx_sessions(
+def load_onnx(
     onnx_dir: str,
-    model_type: str,
-    model_version: Optional[str] = None,
-) -> List[rt.InferenceSession]:
-    if model_version is None:
-        model_version = "v2"
+    model_version: str,
+    provider: Optional[str] = None,
+) -> Tuple[
+    List[rt.InferenceSession], Union[omegaconf.DictConfig, omegaconf.ListConfig]
+]:
+    """Load ONNX sessions for the given versions and cpu / cuda provider"""
+    if provider is None and "CUDAExecutionProvider" in rt.get_available_providers():
+        provider = "CUDAExecutionProvider"
+    elif provider is None:
+        provider = "CPUExecutionProvider"
 
     opts = rt.SessionOptions()
     opts.intra_op_num_threads = 16
     opts.execution_mode = rt.ExecutionMode.ORT_SEQUENTIAL
+    opts.log_severity_level = 3
 
-    if model_type == "ctc":
-        model_path = f"{onnx_dir}/{model_version}_{model_type}.onnx"
+    model_cfg = omegaconf.OmegaConf.load(f"{onnx_dir}/{model_version}.yaml")
+
+    if "rnnt" not in model_version and "ssl" not in model_version:
+        model_path = f"{onnx_dir}/{model_version}.onnx"
         sessions = [
-            rt.InferenceSession(
-                model_path, providers=["CPUExecutionProvider"], sess_options=opts
-            )
+            rt.InferenceSession(model_path, providers=[provider], sess_options=opts)
         ]
-    else:
-        pth = f"{onnx_dir}/{model_version}_{model_type}"
+    elif "ssl" in model_version:
+        pth = f"{onnx_dir}/{model_version}"
         enc_sess = rt.InferenceSession(
-            f"{pth}_encoder.onnx", providers=["CPUExecutionProvider"], sess_options=opts
+            f"{pth}_encoder.onnx", providers=[provider], sess_options=opts
+        )
+        sessions = [enc_sess]
+    else:
+        pth = f"{onnx_dir}/{model_version}"
+        enc_sess = rt.InferenceSession(
+            f"{pth}_encoder.onnx", providers=[provider], sess_options=opts
         )
         pred_sess = rt.InferenceSession(
-            f"{pth}_decoder.onnx", providers=["CPUExecutionProvider"], sess_options=opts
+            f"{pth}_decoder.onnx", providers=[provider], sess_options=opts
         )
         joint_sess = rt.InferenceSession(
-            f"{pth}_joint.onnx", providers=["CPUExecutionProvider"], sess_options=opts
+            f"{pth}_joint.onnx", providers=[provider], sess_options=opts
         )
         sessions = [enc_sess, pred_sess, joint_sess]
 
-    return sessions
+    return sessions, model_cfg
