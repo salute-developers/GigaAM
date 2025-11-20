@@ -1,15 +1,16 @@
 import os
-from io import BytesIO
-from typing import List, Tuple, Union
+from typing import List, Tuple
 
 import torch
-from pyannote.audio import Pipeline
-from pydub import AudioSegment
+from pyannote.audio import Model, Pipeline
+from pyannote.audio.pipelines import VoiceActivityDetection
+
+from .preprocess import load_audio
 
 _PIPELINE = None
 
 
-def get_pipeline(device: Union[str, torch.device]) -> Pipeline:
+def get_pipeline(device: torch.device) -> Pipeline:
     """
     Retrieves a PyAnnote voice activity detection pipeline and move it to the specified device.
     The pipeline is loaded only once and reused across subsequent calls.
@@ -24,51 +25,30 @@ def get_pipeline(device: Union[str, torch.device]) -> Pipeline:
     except KeyError as exc:
         raise ValueError("HF_TOKEN environment variable is not set") from exc
 
-    _PIPELINE = Pipeline.from_pretrained(
-        "pyannote/voice-activity-detection", use_auth_token=hf_token
-    )
+    model = Model.from_pretrained("pyannote/segmentation-3.0", token=hf_token)
+    _PIPELINE = VoiceActivityDetection(segmentation=model)
+    _PIPELINE.instantiate({"min_duration_on": 0.0, "min_duration_off": 0.0})
 
     return _PIPELINE.to(device)
 
 
-def audiosegment_to_tensor(audiosegment: AudioSegment) -> torch.Tensor:
-    """
-    Converts an AudioSegment object to a PyTorch tensor.
-    """
-    samples = torch.tensor(audiosegment.get_array_of_samples(), dtype=torch.float32)
-    if audiosegment.channels == 2:
-        samples = samples.view(-1, 2)
-
-    samples = samples / 32768.0  # Normalize to [-1, 1] range
-    return samples
-
-
-def segment_audio(
-    wav_tensor: torch.Tensor,
-    sample_rate: int,
+def segment_audio_file(
+    wav_file: str,
+    sr: int,
     max_duration: float = 22.0,
     min_duration: float = 15.0,
+    strict_limit_duration: float = 30.0,
     new_chunk_threshold: float = 0.2,
-    device: Union[str, torch.device] = "cpu",
+    device: torch.device = torch.device("cpu"),
 ) -> Tuple[List[torch.Tensor], List[Tuple[float, float]]]:
     """
     Segments an audio waveform into smaller chunks based on speech activity.
     The segmentation is performed using a PyAnnote voice activity detection pipeline.
     """
 
-    audio = AudioSegment(
-        wav_tensor.numpy().tobytes(),
-        frame_rate=sample_rate,
-        sample_width=wav_tensor.dtype.itemsize,
-        channels=1,
-    )
-    audio_bytes = BytesIO()
-    audio.export(audio_bytes, format="wav")
-    audio_bytes.seek(0)
-
-    # Process audio with pipeline to obtain segments with speech activity
+    audio = load_audio(wav_file)
     pipeline = get_pipeline(device)
-    sad_segments = pipeline({"uri": "filename", "audio": audio_bytes})
+    sad_segments = pipeline(wav_file)
 
     segments: List[torch.Tensor] = []
     curr_duration = 0.0
@@ -76,27 +56,34 @@ def segment_audio(
     curr_end = 0.0
     boundaries: List[Tuple[float, float]] = []
 
+    def _update_segments(curr_start: float, curr_end: float, curr_duration: float):
+        if curr_duration > strict_limit_duration:
+            max_segments = int(curr_duration / strict_limit_duration) + 1
+            segment_duration = curr_duration / max_segments
+            curr_end = curr_start + segment_duration
+            for _ in range(max_segments - 1):
+                segments.append(audio[int(curr_start * sr) : int(curr_end * sr)])
+                boundaries.append((curr_start, curr_end))
+                curr_start = curr_end
+                curr_end += segment_duration
+        segments.append(audio[int(curr_start * sr) : int(curr_end * sr)])
+        boundaries.append((curr_start, curr_end))
+
     # Concat segments from pipeline into chunks for asr according to max/min duration
+    # Segments longer than strict_limit_duration are split manually
     for segment in sad_segments.get_timeline().support():
         start = max(0, segment.start)
-        end = min(len(audio) / 1000, segment.end)
-        if (
-            curr_duration > min_duration and start - curr_end > new_chunk_threshold
-        ) or (curr_duration + (end - curr_end) > max_duration):
-
-            start_ms = int(curr_start * 1000)
-            end_ms = int(curr_end * 1000)
-            segments.append(audiosegment_to_tensor(audio[start_ms:end_ms]))
-            boundaries.append((curr_start, curr_end))
+        end = min(audio.shape[0] / sr, segment.end)
+        if curr_duration > new_chunk_threshold and (
+            curr_duration + (end - curr_end) > max_duration
+            or curr_duration > min_duration
+        ):
+            _update_segments(curr_start, curr_end, curr_duration)
             curr_start = start
-
         curr_end = end
         curr_duration = curr_end - curr_start
 
-    if curr_duration != 0:
-        start_ms = int(curr_start * 1000)
-        end_ms = int(curr_end * 1000)
-        segments.append(audiosegment_to_tensor(audio[start_ms:end_ms]))
-        boundaries.append((curr_start, curr_end))
+    if curr_duration > new_chunk_threshold:
+        _update_segments(curr_start, curr_end, curr_duration)
 
     return segments, boundaries

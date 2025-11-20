@@ -1,216 +1,181 @@
 # GigaAM: the family of open-source acoustic models for speech processing
 
-![plot](./gigaam_scheme.svg)
+<div align="center" style="line-height: 1;">
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![arXiv](https://img.shields.io/badge/arXiv-2506.01192-b31b1b.svg)](https://arxiv.org/abs/2506.01192)
+[![HuggingFace](https://img.shields.io/badge/🤗%20HuggingFace-Models-yellow.svg)](https://huggingface.co/ai-sage/GigaAM)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/salute-developers/GigaAM/blob/main/colab_example.ipynb)
+
+</div>
+
+<hr>
+
+![plot](./assets/gigaam_scheme.svg)
 
 ## Latest News
+* 2025/11 — GigaAM-v3: **30%** WER reduction on new data domains; GigaAM-v3-e2e: end-to-end transcription support (**70:30** win in Side-by-Side vs Whisper-large-v3)
 * 2025/06 — Our [research paper on GigaAM](https://arxiv.org/abs/2506.01192) was accepted to InterSpeech 2025!
-* 2024/12 — [MIT License](./LICENSE), GigaAM-v2 (**-15%** and **-12%** WER Reduction for CTC and RNN-T models, respectively), [ONNX export support](#onnx-inference-example)
-* 2024/05 — GigaAM-RNNT (**-19%** WER Reduction), [long-form inference using external Voice Activity Detection](#long-form-audio-transcribation)
-* 2024/04 — GigaAM Release: GigaAM-CTC ([SoTA Speech Recognition model for the Russian language](#performance-metrics-word-error-rate)), [GigaAM-Emo](#gigaam-emo-emotion-recognition)
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Installation](#installation)
-- [GigaAM: The Foundational Model](#gigaam-the-foundational-model)
-- [GigaAM for Speech Recognition](#gigaam-for-speech-recognition)
-  - [GigaAM-CTC](#gigaam-ctc)
-  - [GigaAM-RNNT](#gigaam-rnnt)
-- [GigaAM-Emo: Emotion Recognition](#gigaam-emo-emotion-recognition)
-- [License](#license)
-- [Links](#links)
+* 2024/12 — [MIT License](./LICENSE), GigaAM-v2 (**-15%** and **-12%** WER Reduction for CTC and RNN-T models, respectively), [ONNX export support](#onnx-export-and-inference)
+* 2024/05 — GigaAM-RNNT (**-19%** WER Reduction), [long-form inference using external Voice Activity Detection](#model-inference)
+* 2024/04 — GigaAM Release: GigaAM-CTC ([SoTA Speech Recognition model for the Russian language](#model-performance)), [GigaAM-Emo](#model-performance)
 
 ---
 
-## Overview
-
-GigaAM (**Giga** **A**coustic **M**odel) is a family of open-source models for Russian speech processing tasks, including speech recognition and emotion recognition. The models are built on top of the [Conformer](https://arxiv.org/pdf/2005.08100.pdf) architecture and leverage self-supervised learning ([wav2vec2](https://arxiv.org/abs/2006.11477)-based for GigaAM-v1 and [HuBERT](https://arxiv.org/pdf/2106.07447)-based for GigaAM-v2).
-
-GigaAM models are state-of-the-art open-source solutions for their respective tasks in the Russian language.
-
-This repository includes:
-
-- **GigaAM**: A foundational self-supervised model pre-trained on massive Russian speech datasets.
-- **GigaAM-CTC** and **GigaAM-RNNT**: Fine-tuned models for automatic speech recognition (ASR).
-- **GigaAM-Emo**: A fine-tuned model for emotion recognition.
-
-## Installation
+## Setup
 
 ### Requirements
-- Python ≥ 3.8
+- Python ≥ 3.10
 - [ffmpeg](https://ffmpeg.org/) installed and added to your system's PATH
 
 ### Install the GigaAM Package
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/salute-developers/GigaAM.git
-   cd GigaAM
-   ```
+```bash
+# Clone the repository
+git clone https://github.com/salute-developers/GigaAM.git
+cd GigaAM
 
-2. Install the package in editable mode:
-   ```bash
-   pip install -e .
-   ```
+# Install the package requirements
+pip install -e .
 
-3. Verify the installation:
-   ```python
-   import gigaam
-   model = gigaam.load_model("ctc")
-   print(model)
-   ```
-
----
-
-## GigaAM: The Foundational Model
-
-GigaAM is a [Conformer](https://arxiv.org/pdf/2005.08100.pdf)-based foundational model (240M parameters) pre-trained on 50,000+ hours of diverse Russian speech data. 
-
-It serves as the backbone for the entire GigaAM family, enabling state-of-the-art fine-tuned performance in speech recognition and emotion recognition.
-
-There are 2 available versions:
-
-* GigaAM-v1 was trained with a [wav2vec2](https://arxiv.org/abs/2006.11477)-like approach and can be used by loading the `v1_ssl` model version.
-* GigaAM-v2 was trained with a [HuBERT](https://arxiv.org/pdf/2106.07447)-like approach and allows us to get GigaAM-v2 ASR model with better quality. It can be used by loading the `v2_ssl` or `ssl` model version.
-
-More information about GigaAM-v1 can be found in our [post on Habr](https://habr.com/ru/companies/sberdevices/articles/805569).
-
-### GigaAM Usage Example
-
-```python
-import gigaam
-model = gigaam.load_model('ssl') # Options: "ssl", "v1_ssl"
-embedding, _ = model.embed_audio(audio_path)
+# (optionally) Verify the installation:
+pip install -e .[tests]
+pytest -v tests/test_loading.py -m partial  # or `-m full` to test all models
 ```
 
 ---
 
-## GigaAM for Speech Recognition
+## GigaAM overview
 
-We fine-tuned the GigaAM encoder for ASR using two different architectures:
+GigaAM is a [Conformer](https://arxiv.org/pdf/2005.08100.pdf)-based foundational model (220-240M parameters) pre-trained on diverse Russian speech data. It serves as the backbone for the entire GigaAM family, enabling state-of-the-art fine-tuned performance in speech recognition and emotion recognition. More information about GigaAM-v1 can be found in our [post on Habr](https://habr.com/ru/companies/sberdevices/articles/805569). We fine-tuned the GigaAM encoder for ASR using [CTC](https://www.cs.toronto.edu/~graves/icml_2006.pdf) and [RNNT](https://arxiv.org/abs/1211.3711) decoders. GigaAM family includes three lines of models
 
-- GigaAM-CTC was fine-tuned with [Connectionist Temporal Classification](https://www.cs.toronto.edu/~graves/icml_2006.pdf) and a character-based tokenizer.
-- GigaAM-RNNT was fine-tuned with [RNN Transducer loss](https://arxiv.org/abs/1211.3711).
+| | Pretrain Method | Pretrain (hours) | ASR (hours) | Available Versions |
+| :--- | :--- | :--- | :--- | :---: |
+| **v1** | [Wav2vec 2.0](https://arxiv.org/abs/2006.11477) | 50,000 | 2,000 | `v1_ssl`, `emo`, `v1_ctc`, `v1_rnnt` |
+| **v2** | [HuBERT–CTC](https://arxiv.org/abs/2506.01192) | 50,000 | 2,000 | `v2_ssl`, `v2_ctc`, `v2_rnnt` |
+| **v3** | HuBERT–CTC | 700,000 | 4,000 | `v3_ssl`, `v3_ctc`, `v3_rnnt`, `v3_e2e_ctc`, `v3_e2e_rnnt` |
 
-Fine-tuning was done for both GigaAM-v1 and GigaAM-v2 SSL models, so we have 4 ASR models: `v1` and `v2` versions for both CTC and RNNT.
+Where `v3_e2e_ctc` and `v3_e2e_rnnt` support punctuation and text normalization.
 
-### Training Data
-The models were trained on publicly available Russian datasets:
+## Model Performance
 
-| Dataset                | Size (hours) | Weight |
-|------------------------|--------------|--------|
-| Golos                 | 1227         | 0.6    |
-| SOVA                  | 369          | 0.2    |
-| Russian Common Voice  | 207          | 0.1    |
-| Russian LibriSpeech   | 93           | 0.1    |
+`GigaAM-v3` training incorporates new internal datasets: callcenter, music, speech with atypical characteristics, and voice messages. As a result, the models perform on average **30%** better on these new domains while maintaining the same quality as `GigaAM-v2` on public benchmarks. In end-to-end ASR comparisons of `e2e_ctc` and `e2e_rnnt` against Whisper (judged via independent LLM-as-a-Judge side-by-side) GigaAM models win by an average margin of **70:30**. Our emotion recognition model `GigaAM-Emo` outperforms existing models by **15%** Macro F1-Score.
 
-### Performance Metrics (Word Error Rate)
-| Model              | Parameters | Golos Crowd | Golos Farfield | OpenSTT YouTube | OpenSTT Phone Calls | OpenSTT Audiobooks | Mozilla Common Voice 12 | Mozilla Common Voice 19 | Russian LibriSpeech |
-|--------------------|------------|-------------|----------------|-----------------|----------------------|--------------------|-------|-------|---------------------|
-| Whisper-large-v3   | 1.5B       | 13.9        | 16.6           | 18.0            | 28.0                 | 14.4               | 5.7   | 5.5   | 9.5                 |
-| NVIDIA FastConformer | 115M       | 2.2         | 6.6            | 21.2            | 30.0                 | 13.9               | 2.7   | 5.7   | 11.3                |
-| **GigaAM-CTC-v1**  | 242M       | 3.0         | 5.7            | 16.0            | 23.2                 | 12.5               | 2.0   | 10.5  | 7.5                 |
-| **GigaAM-RNNT-v1** | 243M       | 2.3         | 5.0            | 14.0            | 21.7                 | 11.7               | 1.9   | 9.9   | 7.7                 |
-| **GigaAM-CTC-v2**  | 242M       | 2.5         | 4.3            | 14.1            | 21.1                 | 10.7               | 2.1   | 3.1   | 5.5                 |
-| **GigaAM-RNNT-v2** | 243M       | **<span style="color:green">2.2</span>**         | **<span style="color:green">3.9</span>**            | **<span style="color:green">13.3</span>**            | **<span style="color:green">20.0</span>**                | **<span style="color:green">10.2</span>**               | **<span style="color:green">1.8</span>**   | **<span style="color:green">2.7</span>**   | **<span style="color:green">5.5</span>**               |
-
-
-### Speech Recognition Example (GigaAM-ASR)
-
-   #### Basic usage: short audio transcribation (up to 30 seconds)
-
-   ```python
-   import gigaam
-   model_name = "rnnt"  # Options: "v2_ctc" or "ctc", "v2_rnnt" or "rnnt", "v1_ctc", "v1_rnnt"
-   model = gigaam.load_model(model_name)
-   transcription = model.transcribe(audio_path)
-   ```
-
-   #### Long-form audio transcribation
-   1. Install external VAD dependencies ([pyannote.audio](https://github.com/pyannote/pyannote-audio) library) with 
-      ```bash
-      pip install gigaam[longform]
-      ```
-   2. 
-      * Generate [Hugging Face API token](https://huggingface.co/docs/hub/security-tokens)
-      * Accept the conditions to access [pyannote/voice-activity-detection](https://huggingface.co/pyannote/voice-activity-detection) files and content.
-      * Accept the conditions to access [pyannote/segmentation](https://huggingface.co/pyannote/segmentation) files and content.
-   3. Use the `model.transcribe_longform` method:
-      ```python
-      import os
-      import gigaam
-
-      os.environ["HF_TOKEN"] = "<HF_TOKEN>"
-
-      model = gigaam.load_model("ctc")
-      recognition_result = model.transcribe_longform("long_example.wav")
-
-      for utterance in recognition_result:
-         transcription = utterance["transcription"]
-         start, end = utterance["boundaries"]
-         print(f"[{gigaam.format_time(start)} - {gigaam.format_time(end)}]: {transcription}")
-      ```   
-
-   #### ONNX inference example
-
-   1. Export the model to ONNX using the `model.to_onnx` method:
-      ```python
-      onnx_dir = "onnx"
-      model_type = "rnnt" # or "ctc"
-
-      model = gigaam.load_model(
-         model_type,
-         fp16_encoder=False,  # only fp32 tensors
-         use_flash=False,  # disable flash attention
-      )
-      model.to_onnx(dir_path=onnx_dir)
-      ```
-   2. Run ONNX inference:
-      ```python
-      from gigaam.onnx_utils import load_onnx_sessions, transcribe_sample
-
-      sessions = load_onnx_sessions(onnx_dir, model_type)
-      transcribe_sample("example.wav", model_type, sessions)
-      ```
-
-
-All these examples can also be found in [inference_example.ipynb](./inference_example.ipynb) notebook.
+For detailed results, see [here](./evaluation.md).
 
 ---
 
+## Usage
 
-## GigaAM-Emo: Emotion Recognition
+### Model inference
 
-GigaAM-Emo is a fine-tuned model for emotion recognition trained on the [Dusha](https://arxiv.org/pdf/2212.12266.pdf) dataset. It significantly outperforms existing models on several metrics.
+**Note:** ASR with `.transcribe` function is applicable for audio **only up to 25 seconds**. To enable `.transcribe_longform` install the additional [pyannote.audio](https://github.com/pyannote/pyannote-audio) dependencies
 
-### Performance Metrics
-|  |  | Crowd |  |  | Podcast |  |
-| --- | --- | --- | --- | --- | --- | --- |
-|  | Unweighted Accuracy | Weighted Accuracy | Macro F1-score | Unweighted Accuracy | Weighted Accuracy | Macro F1-score |
-| [DUSHA](https://arxiv.org/pdf/2212.12266.pdf) baseline <br/> ([MobileNetV2](https://arxiv.org/abs/1801.04381) + [Self-Attention](https://arxiv.org/pdf/1805.08318.pdf)) | 0.83 | 0.76 | 0.77 | 0.89 | 0.53 | 0.54 |
-| [АБК](https://aij.ru/archive?albumId=2&videoId=337) ([TIM-Net](https://arxiv.org/pdf/2211.08233.pdf)) | 0.84 | 0.77 | 0.78 | <span style="color:green">0.90</span> | 0.50 | 0.55 |
-| GigaAM-Emo | <span style="color:green">0.90</span> | <span style="color:green">0.87</span> | <span style="color:green">0.84</span> | <span style="color:green">0.90</span> | <span style="color:green">0.76</span> | <span style="color:green">0.67</span> |
+<details>
+<summary>Longform setup instruction</summary>
 
-### Emotion Recognition Example (GigaAM-Emo)
+* Generate [Hugging Face API token](https://huggingface.co/docs/hub/security-tokens)
+* Accept the conditions to access [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) files and content
+
+```bash
+pip install -e .[longform]
+# optionally run longform testing
+pip install -e .[tests]
+HF_TOKEN=<your hf token> pytest -v tests/test_longform.py
+```
+</details>
+
+<br>
+
 
 ```python
 import gigaam
-model = gigaam.load_model('emo')
-emotion2prob: Dict[str, int] = model.get_probs("example.wav")
 
+# Load test audio
+audio_path = gigaam.utils.download_short_audio()
+long_audio_path = gigaam.utils.download_long_audio()
+
+# Audio embeddings
+model_name = "v3_ssl"       # Options: `v1_ssl`, `v2_ssl`, `v3_ssl`
+model = gigaam.load_model(model_name)
+embedding, _ = model.embed_audio(audio_path)
+print(embedding)
+
+# ASR
+model_name = "v3_e2e_rnnt"  # Options: any model version with suffix `_ctc` or `_rnnt`
+model = gigaam.load_model(model_name)
+transcription = model.transcribe(audio_path)
+print(transcription)
+
+# and long-form ASR
+import os
+os.environ["HF_TOKEN"] = <HF_TOKEN with read access to "pyannote/segmentation-3.0">
+utterances = model.transcribe_longform(long_audio_path)
+for utt in utterances:
+   transcription, (start, end) = utt["transcription"], utt["boundaries"]
+   print(f"[{gigaam.format_time(start)} - {gigaam.format_time(end)}]: {transcription}")
+
+# Emotion recognition
+model = gigaam.load_model("emo")
+emotion2prob = model.get_probs(audio_path)
 print(", ".join([f"{emotion}: {prob:.3f}" for emotion, prob in emotion2prob.items()]))
 ```
 
+### Loading from Hugging Face
+
+> **Note:** Install requirements from the [example](./colab_example.ipynb).
+
+```python
+from transformers import AutoModel
+
+model = AutoModel.from_pretrained("ai-sage/GigaAM-v3", revision="e2e_rnnt", trust_remote_code=True)
+```
+
+### ONNX Export and Inference
+
+> **Note:** GPU support can be enabled with `pip install onnxruntime-gpu==1.23.*` if applicable.
+
+1. Export the model to ONNX using the `model.to_onnx` method:
+   ```python
+   onnx_dir = "onnx"
+   model_version = "v3_ctc"  # Options: any version
+
+   model = gigaam.load_model(model_version)
+   model.to_onnx(dir_path=onnx_dir)
+   ```
+
+2. Run ONNX inference:
+   ```python
+   from gigaam.onnx_utils import load_onnx, infer_onnx
+
+   sessions, model_cfg = load_onnx(onnx_dir, model_version)
+   result = infer_onnx(audio_path, model_cfg, sessions)
+   print(result)  # string for ctc / rnnt, np.ndarray for ssl / emo
+   ```
+
+These and more advanced (e.g. custom audio loading, batching) examples can be found in the [Colab notebook](https://colab.research.google.com/github/salute-developers/GigaAM/blob/main/colab_example.ipynb).
+
 ---
 
-## License
+## Citation
 
-GigaAM's code and model weights are released under the [MIT License](./LICENSE).
+If you use GigaAM in your research, please cite our paper:
 
----
+```bibtex
+@inproceedings{kutsakov25_interspeech,
+  title     = {{GigaAM: Efficient Self-Supervised Learner for Speech Recognition}},
+  author    = {Aleksandr Kutsakov and Alexandr Maximenko and Georgii Gospodinov and Pavel Bogomolov and Fyodor Minkin},
+  year      = {2025},
+  booktitle = {{Interspeech 2025}},
+  pages     = {1213--1217},
+  doi       = {10.21437/Interspeech.2025-1616},
+  issn      = {2958-1796},
+}
+```
 
 ## Links
+
 * [[arxiv] GigaAM: Efficient Self-Supervised Learner for Speech Recognition](https://arxiv.org/abs/2506.01192)
 * [[habr] GigaAM: класс открытых моделей для обработки звучащей речи](https://habr.com/ru/companies/sberdevices/articles/805569)
 * [[youtube] Как научить LLM слышать: GigaAM 🤝 GigaChat Audio](https://www.youtube.com/watch?v=O7NSH2SAwRc)
