@@ -25,7 +25,7 @@ def get_pipeline(device: torch.device) -> Pipeline:
     except KeyError as exc:
         raise ValueError("HF_TOKEN environment variable is not set") from exc
 
-    model = Model.from_pretrained("pyannote/segmentation-3.0", token=hf_token)
+    model = Model.from_pretrained("pyannote/segmentation-3.0", token=hf_token, weights_only=False)
     _PIPELINE = VoiceActivityDetection(segmentation=model)
     _PIPELINE.instantiate({"min_duration_on": 0.0, "min_duration_off": 0.0})
 
