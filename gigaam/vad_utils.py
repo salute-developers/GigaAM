@@ -2,6 +2,8 @@ import os
 from typing import List, Tuple
 
 import torch
+from huggingface_hub import snapshot_download
+from huggingface_hub.errors import LocalEntryNotFoundError
 from pyannote.audio import Model, Pipeline
 from pyannote.audio.core.task import Problem, Resolution, Specifications
 from pyannote.audio.pipelines import VoiceActivityDetection
@@ -12,20 +14,37 @@ from .preprocess import load_audio
 _PIPELINE = None
 
 
-def get_pipeline(device: torch.device) -> Pipeline:
+def resolve_local_segmentation_path(model_id: str) -> str:
     """
-    Retrieves a PyAnnote voice activity detection pipeline and move it to the specified device.
-    The pipeline is loaded only once and reused across subsequent calls.
-    It requires the Hugging Face API token to be set in the HF_TOKEN environment variable.
+    Finds the local path to the segmentation model.
     """
-    global _PIPELINE
-    if _PIPELINE is not None:
-        return _PIPELINE.to(device)
-
     try:
-        hf_token = os.environ["HF_TOKEN"]
-    except KeyError as exc:
-        raise ValueError("HF_TOKEN environment variable is not set") from exc
+        return snapshot_download(
+            repo_id=model_id,
+            local_files_only=True,
+        )
+    except LocalEntryNotFoundError:
+        pass
+
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token:
+        raise RuntimeError(
+            f"Model {model_id} was not found locally, "
+            f"and no HF_TOKEN was provided to download it."
+        )
+
+    return snapshot_download(
+        repo_id=model_id,
+        token=hf_token,
+    )
+
+
+def load_segmentation_model(model_id: str) -> Model:
+    """
+    Loads the segmentation model from a local snapshot.
+    If it doesn’t exist, it first creates (downloads) the snapshot.
+    """
+    local_path = resolve_local_segmentation_path(model_id=model_id)
 
     with torch.serialization.safe_globals(
         [
@@ -35,7 +54,23 @@ def get_pipeline(device: torch.device) -> Pipeline:
             Resolution,
         ]
     ):
-        model = Model.from_pretrained("pyannote/segmentation-3.0", token=hf_token)
+        return Model.from_pretrained(local_path)
+
+
+def get_pipeline(
+    device: torch.device, model_id: str = "pyannote/segmentation-3.0"
+) -> Pipeline:
+    """
+    Retrieves a PyAnnote voice activity detection pipeline and moves it to the specified device.
+    The pipeline is loaded only once and reused across subsequent calls.
+    It requires the Hugging Face API token to be set in the HF_TOKEN environment variable.
+    """
+    global _PIPELINE
+    if _PIPELINE is not None:
+        return _PIPELINE.to(device)
+
+    model = load_segmentation_model(model_id=model_id)
+
     _PIPELINE = VoiceActivityDetection(segmentation=model)
     _PIPELINE.instantiate({"min_duration_on": 0.0, "min_duration_off": 0.0})
 
