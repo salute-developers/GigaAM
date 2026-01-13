@@ -115,6 +115,22 @@ for utt in utterances:
    transcription, (start, end) = utt["transcription"], utt["boundaries"]
    print(f"[{gigaam.format_time(start)} - {gigaam.format_time(end)}]: {transcription}")
 
+# Мультиканальная транскрибация (диаризация)
+# Поддерживает стерео/многоканальные файлы или список отдельных файлов
+# Результаты автоматически сортируются по времени и чередуются между каналами
+stereo_file = "conversation_stereo.wav"  # или список: ["channel_0.wav", "channel_1.wav"]
+results = model.transcribe_multichannel(
+    stereo_file,
+    batch_size=4,              # размер батча для обработки сегментов
+    pause_threshold=2.0,        # порог паузы для группировки сегментов (секунды)
+    strict_limit_duration=30.0  # максимальная длительность сегмента для модели (секунды)
+)
+for seg in results:
+    channel = seg["channel"]  # номер канала (0, 1, ...)
+    transcription = seg["transcription"]
+    start, end = seg["boundaries"]
+    print(f"[{start:.2f}s - {end:.2f}s] Канал {channel}: {transcription}")
+
 # Распознавание эмоций
 model = gigaam.load_model("emo")
 emotion2prob = model.get_probs(audio_path)

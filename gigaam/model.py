@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import hydra
 import omegaconf
@@ -167,6 +167,97 @@ class GigaAMASR(GigaAM):
             transcribed_segments.append(
                 {"transcription": result, "boundaries": segment_boundaries}
             )
+        return transcribed_segments
+
+    @torch.inference_mode()
+    def transcribe_multichannel(
+        self,
+        audio_input: Union[str, List[str]],
+        batch_size: int = 4,
+        **kwargs
+    ) -> List[Dict[str, Union[int, str, Tuple[float, float]]]]:
+        """
+        Transcribes multichannel audio with synchronized diarization.
+        
+        Supports:
+        - Single stereo/multichannel file (str)
+        - Multiple separate audio files (List[str])
+        
+        Handles overlapping speech by cutting segments when other channel starts.
+        Maintains decoder state between segments for better quality.
+        
+        Parameters:
+        -----------
+        audio_input : Union[str, List[str]]
+            Either a single multichannel audio file or list of separate files
+        batch_size : int
+            Batch size for processing segments (default: 4)
+        **kwargs
+            Additional arguments passed to segment_multichannel_audio
+        
+        Returns:
+        --------
+        List of dicts with keys: 'channel', 'transcription', 'boundaries' (start, end)
+        """
+        from .vad_utils import segment_multichannel_audio
+        
+        # Segment audio with diarization
+        segments = segment_multichannel_audio(
+            audio_input, SAMPLE_RATE, device=self._device, **kwargs
+        )
+        
+        if not segments:
+            return []
+        
+        transcribed_segments = []
+        
+        # Process all segments together in batches, regardless of channel
+        # Channel information is only used in the final output
+        
+        # Process all segments in batches - no state preservation needed
+        for batch_start in range(0, len(segments), batch_size):
+            batch_segments = segments[batch_start:batch_start + batch_size]
+            
+            # Prepare batch - audio is already on GPU from segmentation
+            batch_audio = []
+            batch_lengths = []
+            
+            for seg in batch_segments:
+                audio = seg["audio"]
+                # Ensure correct dtype (device should already be correct)
+                if audio.dtype != self._dtype:
+                    audio = audio.to(self._dtype)
+                # Ensure audio is 1D: (samples,)
+                if audio.dim() > 1:
+                    audio = audio.squeeze()
+                batch_audio.append(audio)
+                batch_lengths.append(len(audio))
+            
+            # Pad and batch - more efficient: create tensor and fill in one pass
+            max_len = max(batch_lengths)
+            batched_audio = torch.zeros(
+                len(batch_audio), max_len, dtype=self._dtype, device=self._device
+            )
+            for i, audio in enumerate(batch_audio):
+                batched_audio[i, :len(audio)] = audio
+            
+            # Format: (batch, samples) - same as transcribe_longform uses
+            batched_lengths = torch.tensor(batch_lengths, device=self._device, dtype=torch.long)
+            
+            # Forward pass
+            encoded, encoded_len = self.forward(batched_audio, batched_lengths)
+            
+            # Decode
+            batch_results = self.decoding.decode(self.head, encoded, encoded_len)
+            
+            # Store transcribed segments
+            for idx, seg in enumerate(batch_segments):
+                transcribed_segments.append({
+                    "channel": seg["channel"],
+                    "transcription": batch_results[idx],
+                    "boundaries": seg["boundaries"],
+                })
+        
         return transcribed_segments
 
 

@@ -9,7 +9,7 @@ import torch
 from tqdm import tqdm
 
 from .model import GigaAM, GigaAMASR, GigaAMEmo
-from .preprocess import load_audio
+from .preprocess import load_audio, load_multichannel_audio
 from .utils import format_time
 
 __all__ = [
@@ -17,6 +17,7 @@ __all__ = [
     "GigaAMASR",
     "GigaAMEmo",
     "load_audio",
+    "load_multichannel_audio",
     "format_time",
     "load_model",
 ]
