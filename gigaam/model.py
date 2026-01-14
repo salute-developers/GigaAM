@@ -236,7 +236,7 @@ class GigaAMASR(GigaAM):
             # Pad and batch - more efficient: create tensor and fill in one pass
             max_len = max(batch_lengths)
             batched_audio = torch.zeros(
-                len(batch_audio), max_len, dtype=self._dtype, device=self._device
+                len(batch_audio), max(max_len, 320), dtype=self._dtype, device=self._device
             )
             for i, audio in enumerate(batch_audio):
                 batched_audio[i, :len(audio)] = audio
