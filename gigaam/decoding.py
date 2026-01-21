@@ -61,17 +61,18 @@ class CTCGreedyDecoding:
         labels = log_probs.argmax(dim=-1, keepdim=False)
 
         skip_mask = labels != self.blank_id
-        skip_mask[:, 1:] = torch.logical_and(
-            skip_mask[:, 1:], labels[:, 1:] != labels[:, :-1]
-        )
+        skip_mask[:, 1:] &= (labels[:, 1:] != labels[:, :-1])
         for i, length in enumerate(lengths):
             skip_mask[i, length:] = 0
 
         pred_texts: List[str] = []
         for i in range(b):
-            pred_texts.append(
-                "".join(self.tokenizer.decode(labels[i][skip_mask[i]].cpu().tolist()))
-            )
+            valid_labels = labels[i][skip_mask[i]]
+            if len(valid_labels) > 0:
+                label_list = valid_labels.cpu().tolist()
+                pred_texts.append(self.tokenizer.decode(label_list))
+            else:
+                pred_texts.append("")
         return pred_texts
 
 
