@@ -5,9 +5,8 @@ import omegaconf
 import torch
 from torch import Tensor, nn
 
-from .preprocess import SAMPLE_RATE, load_audio
+from .preprocess import SAMPLE_RATE, load_audio, load_audio_from_bytes
 from .utils import onnx_converter
-from .preprocess import load_audio_from_bytes
 
 LONGFORM_THRESHOLD = 25 * SAMPLE_RATE
 
