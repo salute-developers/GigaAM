@@ -5,7 +5,7 @@ import omegaconf
 import torch
 from torch import Tensor, nn
 
-from .preprocess import SAMPLE_RATE, load_audio
+from .preprocess import SAMPLE_RATE, load_audio, load_audio_from_bytes
 from .utils import onnx_converter
 
 LONGFORM_THRESHOLD = 25 * SAMPLE_RATE
@@ -97,6 +97,23 @@ class GigaAMASR(GigaAM):
         wav, length = self.prepare_wav(wav_file)
         if length.item() > LONGFORM_THRESHOLD:
             raise ValueError("Too long wav file, use 'transcribe_longform' method.")
+
+        encoded, encoded_len = self.forward(wav, length)
+        return self.decoding.decode(self.head, encoded, encoded_len)[0]
+
+    @torch.inference_mode()
+    def transcribe_bytes(self, audio_bytes: bytes) -> str:
+        """
+        Transcribes raw PCM16 audio bytes directly into text.
+        This is the fastest method for in-memory processing.
+        """
+
+        wav = load_audio_from_bytes(audio_bytes)
+        wav = wav.to(self._device).to(self._dtype).unsqueeze(0)
+        length = torch.full([1], wav.shape[-1], device=self._device)
+
+        if length.item() > LONGFORM_THRESHOLD:
+            raise ValueError("Too long audio, use 'transcribe_longform' method.")
 
         encoded, encoded_len = self.forward(wav, length)
         return self.decoding.decode(self.head, encoded, encoded_len)[0]
