@@ -1,9 +1,0 @@
-hydra-core==1.3.*
-numpy==2.*
-omegaconf==2.3.*
-onnx==1.19.*
-onnxruntime==1.23.*
-sentencepiece
-torch>=2.5,<2.9
-torchaudio>=2.5,<2.9
-tqdm
