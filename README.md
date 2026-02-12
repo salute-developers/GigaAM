@@ -40,7 +40,7 @@ cd GigaAM
 pip install -e .
 
 # (optionally) Verify the installation:
-pip install -e .[tests]
+pip install -e ".[tests]"
 pytest -v tests/test_loading.py -m partial  # or `-m full` to test all models
 ```
 
@@ -79,9 +79,9 @@ For detailed results, see [here](./evaluation.md).
 * Accept the conditions to access [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) files and content
 
 ```bash
-pip install -e .[longform]
+pip install -e ".[longform]"
 # optionally run longform testing
-pip install -e .[tests]
+pip install -e ".[tests]"
 HF_TOKEN=<your hf token> pytest -v tests/test_longform.py
 ```
 </details>
