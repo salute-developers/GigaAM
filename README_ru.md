@@ -39,7 +39,7 @@ cd GigaAM
 pip install -e .
 
 # (опционально) Проверить установку:
-pip install -e .[tests]
+pip install -e ".[tests]"
 pytest -v tests/test_loading.py -m partial  # или `-m full` для тестирования всех моделей
 ```
 
@@ -78,9 +78,9 @@ GigaAM - фундаментальная акустическая модель н
 * Примите условия для получения доступа к контенту [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
 
 ```bash
-pip install -e .[longform]
+pip install -e ".[longform]"
 # опционально: запустить тесты для длинной транскрибации
-pip install -e .[tests]
+pip install -e ".[tests]"
 HF_TOKEN=<ваш hf токен> pytest -v tests/test_longform.py
 ```
 </details>
