@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""
+gigaam-stream — Real-time speech recognition using GigaAM v3 on MLX.
+
+Growing-buffer pseudo-streaming: captures audio, transcribes from start
+up to current position each step. GigaAM is 85x realtime on M4 so
+even 30s audio processes in ~0.4s.
+
+Usage:
+    gigaam-stream                           # live microphone
+    gigaam-stream --file audio.wav          # file streaming
+    gigaam-stream --step 1000 --context 5000  # custom timing
+
+Requirements:
+    pip install sounddevice   (for live microphone capture)
+"""
+import argparse
+import os
+import sys
+import time
+import threading
+import signal
+
+import numpy as np
+import mlx.core as mx
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_MODEL = os.path.join(SCRIPT_DIR, "gigaam-v3-ctc-mlx")
+SAMPLE_RATE = 16000
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="GigaAM v3 real-time streaming (MLX)")
+    p.add_argument("-m", "--model", default=DEFAULT_MODEL, help="Model directory")
+    p.add_argument("--step", type=int, default=2000,
+                   help="Process every N ms (default: 2000)")
+    p.add_argument("--file", "-f", type=str, default=None,
+                   help="Transcribe file instead of microphone")
+    p.add_argument("--no-overwrite", action="store_true",
+                   help="Print incrementally instead of overwriting line")
+    p.add_argument("--vad-threshold", type=float, default=0.003,
+                   help="VAD energy threshold (default: 0.003)")
+    return p.parse_args()
+
+
+def clear_line():
+    sys.stdout.write("\33[2K\r")
+    sys.stdout.flush()
+
+
+def stream_from_file(model, audio, args):
+    """Stream a pre-recorded file with growing buffer."""
+    from gigaam_mlx import StreamingConfig
+
+    config = StreamingConfig(step_duration=args.step / 1000.0)
+    total_dur = audio.shape[0] / SAMPLE_RATE
+
+    print(f"\033[90m[Streaming {total_dur:.1f}s audio, step={args.step}ms]\033[0m\n")
+
+    t0 = time.time()
+    for result in model.stream_generate(audio, config=config):
+        elapsed = time.time() - t0
+        if args.no_overwrite:
+            if result.text:
+                sys.stdout.write(result.text)
+                sys.stdout.flush()
+        else:
+            clear_line()
+            # Show current transcription with position indicator
+            pos = f"[{result.audio_position:.1f}s]"
+            sys.stdout.write(f"\r\033[90m{pos}\033[0m {result.cumulative_text}")
+            sys.stdout.flush()
+
+        if result.is_final:
+            print()
+            break
+
+    total_time = time.time() - t0
+    print(f"\n\033[90m[Done in {total_time:.2f}s | {total_dur/total_time:.0f}x realtime]\033[0m")
+
+
+def stream_from_microphone(model, args):
+    """Live streaming from microphone with growing buffer."""
+    try:
+        import sounddevice as sd
+    except ImportError:
+        print("Error: sounddevice not installed. Run: uv pip install sounddevice",
+              file=sys.stderr)
+        sys.exit(1)
+
+    step_ms = args.step
+    step_sec = step_ms / 1000.0
+
+    # Shared state
+    audio_buffer = np.zeros(0, dtype=np.float32)
+    buffer_lock = threading.Lock()
+    running = True
+    prev_text = ""
+
+    def audio_callback(indata, frames, time_info, status):
+        nonlocal audio_buffer
+        if status:
+            print(f"\033[90m[audio: {status}]\033[0m", file=sys.stderr)
+        chunk = indata[:, 0].copy()
+        with buffer_lock:
+            audio_buffer = np.concatenate([audio_buffer, chunk])
+            # Cap at 30s
+            max_buf = SAMPLE_RATE * 30
+            if len(audio_buffer) > max_buf:
+                audio_buffer = audio_buffer[-max_buf:]
+
+    def signal_handler(sig, frame):
+        nonlocal running
+        running = False
+
+    signal.signal(signal.SIGINT, signal_handler)
+
+    print(f"\033[90m[GigaAM streaming — step={step_ms}ms, Ctrl+C to stop]\033[0m")
+    print(f"\033[90m[Start speaking...]\033[0m\n")
+
+    stream = sd.InputStream(
+        samplerate=SAMPLE_RATE,
+        channels=1,
+        dtype="float32",
+        blocksize=int(SAMPLE_RATE * 0.1),
+        callback=audio_callback,
+    )
+    stream.start()
+
+    last_process_time = 0
+    silence_count = 0
+    MAX_SILENCE = 5  # stop after 5 consecutive silent steps
+
+    try:
+        while running:
+            now = time.time()
+            if now - last_process_time < step_sec:
+                time.sleep(0.05)
+                continue
+
+            last_process_time = now
+
+            with buffer_lock:
+                if len(audio_buffer) < int(SAMPLE_RATE * 0.3):
+                    continue
+                buf_copy = audio_buffer.copy()
+
+            # Simple energy VAD on latest step
+            latest = buf_copy[-min(int(step_sec * SAMPLE_RATE), len(buf_copy)):]
+            energy = np.sqrt(np.mean(latest ** 2))
+
+            if energy < args.vad_threshold:
+                silence_count += 1
+                continue
+            else:
+                silence_count = 0
+
+            # Transcribe entire buffer (growing buffer approach)
+            t0 = time.time()
+            audio_mx = mx.array(buf_copy)
+            result = model.stream_live(audio_mx)
+            dt = time.time() - t0
+
+            text = result.cumulative_text
+
+            if text and text != prev_text:
+                clear_line()
+                dur = len(buf_copy) / SAMPLE_RATE
+                sys.stdout.write(
+                    f"\r\033[90m[{dur:.1f}s {dt*1000:.0f}ms]\033[0m {text}"
+                )
+                sys.stdout.flush()
+                prev_text = text
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stream.stop()
+        stream.close()
+        print(f"\n")
+        if prev_text:
+            print(f"\033[1mFinal:\033[0m {prev_text}")
+
+
+def main():
+    args = parse_args()
+
+    sys.path.insert(0, SCRIPT_DIR)
+    from gigaam_mlx import load_model, load_audio
+
+    print(f"\033[90mLoading GigaAM v3 MLX...\033[0m", file=sys.stderr)
+    t0 = time.time()
+    model = load_model(args.model)
+    print(f"\033[90mLoaded in {time.time() - t0:.2f}s\033[0m", file=sys.stderr)
+
+    if args.file:
+        audio = load_audio(args.file)
+        stream_from_file(model, audio, args)
+    else:
+        stream_from_microphone(model, args)
+
+
+if __name__ == "__main__":
+    main()

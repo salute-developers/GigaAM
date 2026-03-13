@@ -5,3 +5,9 @@ build
 .DS_Store
 *tmp*
 onnx
+.venv
+mlx_convert/.venv
+mlx_convert/gigaam-v3-ctc-mlx/
+mlx_convert/gigaam-v3-ctc-mlx-fp32/
+mlx_convert/ggml-small.bin
+mlx_convert/debug_*.py

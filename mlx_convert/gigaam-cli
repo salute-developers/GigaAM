@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""
+gigaam-cli — GigaAM v3 CTC transcription CLI for MLX.
+
+Drop-in companion for whisper-cli. Used by OpenWispr.
+
+Usage:
+    gigaam-cli -f audio.wav [-m /path/to/model_dir]
+    gigaam-cli --help
+"""
+import argparse
+import os
+import sys
+import time
+
+# Resolve default model dir relative to this script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_MODEL = os.path.join(SCRIPT_DIR, "gigaam-v3-ctc-mlx")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="GigaAM v3 CTC transcription (MLX)")
+    parser.add_argument("-f", "--file", required=True, help="Audio file path")
+    parser.add_argument("-m", "--model", default=DEFAULT_MODEL, help="Model directory")
+    parser.add_argument("-l", "--language", default="ru", help="Language (ignored, always ru)")
+    parser.add_argument("-nt", "--no-timestamps", action="store_true", help="(compat flag, ignored)")
+    parser.add_argument("--no-prints", action="store_true", help="Suppress info messages")
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.file):
+        print(f"Error: file not found: {args.file}", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.isdir(args.model):
+        print(f"Error: model dir not found: {args.model}", file=sys.stderr)
+        sys.exit(1)
+
+    # Add script directory to path so gigaam_mlx can be imported
+    sys.path.insert(0, SCRIPT_DIR)
+    from gigaam_mlx import load_model, load_audio
+
+    if not args.no_prints:
+        print(f"gigaam-cli: loading model from {args.model}", file=sys.stderr)
+
+    t0 = time.time()
+    model = load_model(args.model)
+    load_time = time.time() - t0
+
+    if not args.no_prints:
+        print(f"gigaam-cli: model loaded in {load_time:.2f}s", file=sys.stderr)
+
+    audio = load_audio(args.file)
+
+    t0 = time.time()
+    text = model.transcribe(audio)
+    transcribe_time = time.time() - t0
+
+    if not args.no_prints:
+        print(f"gigaam-cli: transcribed in {transcribe_time:.2f}s", file=sys.stderr)
+
+    # Output ONLY the text to stdout (like whisper-cli -nt)
+    print(text)
+
+
+if __name__ == "__main__":
+    main()
