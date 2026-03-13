@@ -4,10 +4,12 @@ Convert GigaAM v3 PyTorch checkpoint to MLX safetensors format.
 Handles weight shape transpositions required by MLX conventions:
 - PyTorch Conv1d: [out_ch, in_ch, kernel] → MLX Conv1d: [out_ch, kernel, in_ch]
 - PyTorch Linear: same (no change needed, MLX nn.Linear uses same layout)
+- RNNT LSTM weights properly mapped to MLX layout
 - BatchNorm running stats need special handling
 
 Usage:
     python convert_gigaam_to_mlx.py --model v3_ctc --output ./gigaam-v3-ctc-mlx
+    python convert_gigaam_to_mlx.py --model v3_rnnt --output ./gigaam-v3-rnnt-mlx
 """
 import argparse
 import json
@@ -65,7 +67,32 @@ def sanitize_weights(state_dict: dict) -> dict:
         # This covers: encoder.pre_encode.conv.*, encoder.layers.*.conv.*, head.decoder_layers.*
         if "weight" in key and len(w.shape) == 3:
             w = transpose_conv1d_weight(w)
-        
+            
+        # RNNT LSTM conversions
+        if "lstm.weight_ih" in key:
+            mlx_weights[key.replace(".weight_ih_l0", ".Wx")] = w
+            continue
+        if "lstm.weight_hh" in key:
+            mlx_weights[key.replace(".weight_hh_l0", ".Wh")] = w
+            continue
+        if "lstm.bias_ih" in key:
+            # We must add bias_ih and bias_hh
+            hh_key = key.replace(".bias_ih_l0", ".bias_hh_l0")
+            hh_w = state_dict[hh_key].detach().cpu().float().numpy()
+            mlx_weights[key.replace(".bias_ih_l0", ".bias")] = w + hh_w
+            continue
+        if "lstm.bias_hh" in key:
+            # Already handled with bias_ih
+            continue
+            
+        # RNNT Joint conversions
+        if "joint.joint_net.1.weight" in key:
+            mlx_weights[key.replace("joint_net.1.weight", "joint_net_linear.weight")] = w
+            continue
+        if "joint.joint_net.1.bias" in key:
+            mlx_weights[key.replace("joint_net.1.bias", "joint_net_linear.bias")] = w
+            continue
+            
         # BatchNorm / LayerNorm:
         # GigaAM v3 uses layer_norm for conv_norm_type, so batch_norm is actually LayerNorm
         # The keys already use "batch_norm" name but the module is nn.LayerNorm
@@ -126,6 +153,10 @@ def build_config(model_name: str, cfg) -> dict:
             "decoder": cfg_dict["head"]["decoder"],
             "joint": cfg_dict["head"]["joint"],
         }
+        if "vocabulary" in cfg_dict["decoding"]:
+            config["vocabulary"] = cfg_dict["decoding"]["vocabulary"]
+        else:
+            config["vocabulary"] = VOCABULARY_V3
         # RNNT uses tokenizer
         config["tokenizer_model"] = "tokenizer.model"
     

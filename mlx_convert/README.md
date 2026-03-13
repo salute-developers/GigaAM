@@ -1,8 +1,10 @@
 # GigaAM v3 MLX — Russian ASR on Apple Silicon
 
-GigaAM v3 CTC (Conformer encoder, 16 layers, 768d) converted to [MLX](https://github.com/ml-explore/mlx) for fast inference on Apple Silicon.
+GigaAM v3 (Conformer encoder, 16 layers, 768d) converted to [MLX](https://github.com/ml-explore/mlx) for fast inference on Apple Silicon.
+Supports both **CTC** and **RNNT** models.
 
-**139x realtime** on M4 — transcribes 11 seconds of Russian speech in 81ms.
+**139x realtime** for CTC on M4 — transcribes 11 seconds of Russian speech in 81ms.
+**48x realtime** for RNNT on M4 — transcribes 11 seconds in 230ms (higher quality, sequential decode).
 
 ## Quick Start
 

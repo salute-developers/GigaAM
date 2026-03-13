@@ -49,6 +49,12 @@ class GigaAMConfig:
     # head
     head_type: str = "ctc"
     num_classes: int = 34
+    
+    # rnnt specific
+    rnnt_pred_hidden: int = 320
+    rnnt_joint_hidden: int = 320
+    rnnt_max_symbols: int = 10
+    
     # vocabulary
     vocabulary: Optional[List[str]] = None
 
@@ -81,7 +87,9 @@ class GigaAMConfig:
             conv_kernel_size=enc.get("conv_kernel_size", 5),
             conv_norm_type=enc.get("conv_norm_type", "layer_norm"),
             head_type=d.get("head_type", "ctc"),
-            num_classes=head.get("num_classes", 34),
+            num_classes=head.get("num_classes", 34) if "num_classes" in head else head.get("decoder", {}).get("num_classes", 34),
+            rnnt_pred_hidden=head.get("decoder", {}).get("pred_hidden", 320),
+            rnnt_joint_hidden=head.get("joint", {}).get("joint_hidden", 320),
             vocabulary=d.get("vocabulary"),
         )
 
@@ -382,6 +390,46 @@ class ConformerEncoder(nn.Module):
         return x, lengths
 
 
+class RNNTJoint(nn.Module):
+    def __init__(self, enc_hidden: int, pred_hidden: int, joint_hidden: int, num_classes: int):
+        super().__init__()
+        self.enc = nn.Linear(enc_hidden, joint_hidden)
+        self.pred = nn.Linear(pred_hidden, joint_hidden)
+        self.joint_net_linear = nn.Linear(joint_hidden, num_classes)
+
+    def __call__(self, encoder_out: mx.array, decoder_out: mx.array) -> mx.array:
+        enc = mx.expand_dims(self.enc(encoder_out), 2)
+        pred = mx.expand_dims(self.pred(decoder_out), 1)
+        joint_rep = mx.maximum(enc + pred, 0.0)
+        return self.joint_net_linear(joint_rep)
+
+
+class RNNTDecoder(nn.Module):
+    def __init__(self, num_classes: int, pred_hidden: int):
+        super().__init__()
+        self.blank_id = num_classes - 1
+        self.pred_hidden = pred_hidden
+        self.embed = nn.Embedding(num_classes, pred_hidden)
+        self.lstm = nn.LSTM(pred_hidden, pred_hidden)
+
+    def predict(self, x: Optional[int], state: Optional[Tuple[mx.array, mx.array]], batch_size: int = 1):
+        if x is not None:
+            emb = self.embed(mx.array([[x]]))
+        else:
+            emb = mx.zeros((batch_size, 1, self.pred_hidden))
+
+        h, c = state if state is not None else (None, None)
+        out, cell = self.lstm(emb, hidden=h, cell=c)
+        return out, (out[:, -1, :], cell[:, -1, :])
+
+
+class RNNTHead(nn.Module):
+    def __init__(self, feat_in: int, pred_hidden: int, joint_hidden: int, num_classes: int):
+        super().__init__()
+        self.decoder = RNNTDecoder(num_classes, pred_hidden)
+        self.joint = RNNTJoint(feat_in, pred_hidden, joint_hidden, num_classes)
+
+
 class CTCHead(nn.Module):
     """CTC decoder head: Conv1d(d_model, num_classes, kernel=1)."""
     def __init__(self, feat_in: int, num_classes: int):
@@ -441,20 +489,30 @@ class StreamingResult:
     language: str = "ru"
 
 
-class GigaAMCTC(nn.Module):
-    """Full GigaAM CTC model."""
+class GigaAM(nn.Module):
+    """Full GigaAM model (supports CTC and RNNT)."""
     def __init__(self, cfg: GigaAMConfig):
         super().__init__()
         self.cfg = cfg
         self.encoder = ConformerEncoder(cfg)
-        self.head = CTCHead(cfg.d_model, cfg.num_classes + 1)  # +1 for blank
+        
+        if cfg.head_type == "rnnt":
+            self.head = RNNTHead(
+                feat_in=cfg.d_model,
+                pred_hidden=cfg.rnnt_pred_hidden,
+                joint_hidden=cfg.rnnt_joint_hidden,
+                num_classes=cfg.num_classes
+            )
+        else:
+            self.head = CTCHead(cfg.d_model, cfg.num_classes)
+            
         self.mel_filterbank: Optional[mx.array] = None
         self.stft_window: Optional[mx.array] = None
 
     def __call__(self, features: mx.array, lengths: mx.array) -> Tuple[mx.array, mx.array]:
+        """Returns encoded features and their lengths."""
         encoded, enc_lengths = self.encoder(features, lengths)
-        log_probs = self.head(encoded)
-        return log_probs, enc_lengths
+        return encoded, enc_lengths
 
     def _ctc_decode(self, log_probs: mx.array, enc_length: int) -> str:
         """CTC greedy decode: collapse repeated + remove blanks."""
@@ -490,9 +548,47 @@ class GigaAMCTC(nn.Module):
     def transcribe(self, audio: mx.array) -> str:
         """Transcribe raw audio waveform → text."""
         mel, lengths = self._compute_features(audio)
-        log_probs, enc_lengths = self(mel, lengths)
-        mx.eval(log_probs, enc_lengths)
-        return self._ctc_decode(log_probs[0], int(enc_lengths[0]))
+        encoded, enc_lengths = self(mel, lengths)
+        mx.eval(encoded, enc_lengths)
+        
+        if self.cfg.head_type == "rnnt":
+            return self._rnnt_decode(encoded[0], int(enc_lengths[0]))
+        else:
+            log_probs = self.head(encoded)
+            return self._ctc_decode(log_probs[0], int(enc_lengths[0]))
+
+    def _rnnt_decode(self, encoded: mx.array, enc_length: int) -> str:
+        """Greedy decode for RNN-T."""
+        vocab = self.cfg.vocabulary
+        blank_id = len(vocab)
+        max_symbols = self.cfg.rnnt_max_symbols
+        
+        hyp = []
+        dec_state = None
+        last_label = None
+        
+        for t in range(enc_length):
+            # encoded: [T, D] -> [1, 1, D]
+            f = encoded[t:t+1, :].reshape(1, 1, -1)
+            
+            not_blank = True
+            new_symbols = 0
+            while not_blank and new_symbols < max_symbols:
+                g, hidden = self.head.decoder.predict(last_label, dec_state, batch_size=1)
+                # g: [1, 1, D]
+                # joint output is [1, 1, 1, num_classes], we want argmax over classes
+                logits = self.head.joint(f, g)  # [1, 1, 1, C]
+                k = int(mx.argmax(logits[0, 0, 0, :]).item())
+                
+                if k == blank_id:
+                    not_blank = False
+                else:
+                    hyp.append(k)
+                    dec_state = hidden
+                    last_label = k
+                    new_symbols += 1
+                    
+        return "".join(vocab[i] for i in hyp)
 
     def transcribe_chunk(self, audio: mx.array) -> str:
         """Transcribe a single chunk (for streaming). Same as transcribe but clearer name."""
@@ -612,11 +708,11 @@ def _incremental_text(previous: str, current: str) -> str:
     return current
 
 
-def load_model(model_dir: str) -> GigaAMCTC:
+def load_model(model_dir: str) -> GigaAM:
     """Load converted GigaAM MLX model from directory."""
     model_dir = Path(model_dir)
     cfg = GigaAMConfig.from_file(str(model_dir / "config.json"))
-    model = GigaAMCTC(cfg)
+    model = GigaAM(cfg)
     weights = mx.load(str(model_dir / "model.safetensors"))
     
     # Extract preprocessing weights
