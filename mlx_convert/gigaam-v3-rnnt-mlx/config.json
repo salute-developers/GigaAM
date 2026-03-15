@@ -1,0 +1,77 @@
+{
+  "model_type": "gigaam",
+  "model_name": "v3_rnnt",
+  "sample_rate": 16000,
+  "preprocessor": {
+    "sample_rate": 16000,
+    "features": 64,
+    "win_length": 320,
+    "hop_length": 160,
+    "n_fft": 320,
+    "center": false
+  },
+  "encoder": {
+    "feat_in": 64,
+    "n_layers": 16,
+    "d_model": 768,
+    "subsampling": "conv1d",
+    "subs_kernel_size": 5,
+    "subsampling_factor": 4,
+    "ff_expansion_factor": 4,
+    "self_attention_model": "rotary",
+    "pos_emb_max_len": 5000,
+    "n_heads": 16,
+    "conv_kernel_size": 5,
+    "conv_norm_type": "layer_norm"
+  },
+  "head_type": "rnnt",
+  "head": {
+    "decoder": {
+      "pred_hidden": 320,
+      "pred_rnn_layers": 1,
+      "num_classes": 34
+    },
+    "joint": {
+      "enc_hidden": 768,
+      "pred_hidden": 320,
+      "joint_hidden": 320,
+      "num_classes": 34
+    }
+  },
+  "vocabulary": [
+    " ",
+    "а",
+    "б",
+    "в",
+    "г",
+    "д",
+    "е",
+    "ж",
+    "з",
+    "и",
+    "й",
+    "к",
+    "л",
+    "м",
+    "н",
+    "о",
+    "п",
+    "р",
+    "с",
+    "т",
+    "у",
+    "ф",
+    "х",
+    "ц",
+    "ч",
+    "ш",
+    "щ",
+    "ъ",
+    "ы",
+    "ь",
+    "э",
+    "ю",
+    "я"
+  ],
+  "tokenizer_model": "tokenizer.model"
+}
