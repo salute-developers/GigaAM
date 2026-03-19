@@ -45,6 +45,7 @@ def onnx_converter(
             output_names=output_names,
             dynamic_axes=dynamic_axes,
             opset_version=opset_version,
+            dynamo=False,
         )
     print(f"Successfully ported onnx {model_name} to {out_path}.")
     module.to(saved_dtype)
