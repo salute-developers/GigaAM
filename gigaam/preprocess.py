@@ -1,6 +1,6 @@
 import warnings
 from subprocess import CalledProcessError, run
-from typing import Tuple
+from typing import List, Tuple, Union
 
 import torch
 import torchaudio
@@ -38,6 +38,105 @@ def load_audio(audio_path: str, sample_rate: int = SAMPLE_RATE) -> Tensor:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=UserWarning)
         return torch.frombuffer(audio, dtype=torch.int16).float() / 32768.0
+
+
+def load_multichannel_audio(
+    audio_input: Union[str, List[str]], 
+    sample_rate: int = SAMPLE_RATE
+) -> Tuple[List[Tensor], int]:
+    """
+    Load multichannel audio from either:
+    - A single stereo/multichannel file (str)
+    - Multiple separate audio files (List[str])
+    
+    Returns:
+        Tuple of (list of channel tensors, max_length)
+    """
+    if isinstance(audio_input, str):
+        # Try to load with torchaudio first (more reliable for multichannel)
+        try:
+            import torchaudio
+            waveform, file_sr = torchaudio.load(audio_input)
+            
+            # Resample if needed
+            if file_sr != sample_rate:
+                resampler = torchaudio.transforms.Resample(file_sr, sample_rate)
+                waveform = resampler(waveform)
+            
+            # Convert to list of channel tensors
+            num_channels = waveform.shape[0]
+            channels = [waveform[i] for i in range(num_channels)]
+            
+            max_length = max(len(ch) for ch in channels)
+            return channels, max_length
+        except Exception:
+            # Fallback to ffmpeg approach
+            pass
+        
+        # Fallback: Load multichannel file with ffmpeg
+        cmd = [
+            "ffmpeg",
+            "-nostdin",
+            "-threads",
+            "0",
+            "-i",
+            audio_input,
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            str(sample_rate),
+            "-",
+        ]
+        try:
+            audio_bytes = run(cmd, capture_output=True, check=True).stdout
+        except CalledProcessError as exc:
+            raise RuntimeError(f"Failed to load audio from {audio_input}") from exc
+        
+        # Try to determine number of channels from file metadata
+        # Default to stereo (2 channels) for common cases
+        num_channels = 2  # Default assumption
+        
+        # Try ffprobe if available
+        cmd_probe = [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "stream=channels",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            audio_input
+        ]
+        try:
+            result = run(cmd_probe, capture_output=True, check=True)
+            num_channels = int(result.stdout.strip().split()[0])
+        except (CalledProcessError, ValueError, IndexError):
+            # If ffprobe fails, try to infer from data size
+            # This is a heuristic - may not always work
+            pass
+        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=UserWarning)
+            audio_data = torch.frombuffer(audio_bytes, dtype=torch.int16).float() / 32768.0
+        
+        # Reshape to channels
+        if num_channels > 1 and len(audio_data) % num_channels == 0:
+            audio_data = audio_data.view(-1, num_channels).transpose(0, 1)
+            channels = [audio_data[i] for i in range(num_channels)]
+        else:
+            # Single channel or couldn't determine
+            channels = [audio_data]
+        
+        max_length = max(len(ch) for ch in channels)
+        return channels, max_length
+    
+    else:
+        # Load multiple separate files
+        channels = []
+        for path in audio_input:
+            channels.append(load_audio(path, sample_rate))
+        
+        max_length = max(len(ch) for ch in channels)
+        return channels, max_length
 
 
 class SpecScaler(nn.Module):
