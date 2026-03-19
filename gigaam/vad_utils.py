@@ -119,7 +119,9 @@ def segment_audio_file(
     for segment in sad_segments.get_timeline().support():
         start = max(0, segment.start)
         end = min(audio.shape[0] / sr, segment.end)
-        if curr_duration > new_chunk_threshold and (
+        if curr_duration == 0.0:
+            curr_start = start
+        elif curr_duration > new_chunk_threshold and (
             curr_duration + (end - curr_end) > max_duration
             or curr_duration > min_duration
         ):
