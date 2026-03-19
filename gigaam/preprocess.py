@@ -39,6 +39,19 @@ def load_audio(audio_path: str, sample_rate: int = SAMPLE_RATE) -> Tensor:
         warnings.simplefilter("ignore", category=UserWarning)
         return torch.frombuffer(audio, dtype=torch.int16).float() / 32768.0
 
+def load_audio_from_bytes(audio_bytes: bytes, device: torch.device = None) -> Tensor:
+    """
+    Load audio directly from PCM16 bytes without any external tools.
+    This is the fastest method for in-memory audio processing.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)
+        audio_tensor = torch.frombuffer(audio_bytes, dtype=torch.int16).float() / 32768.0
+
+        if device is not None:
+            audio_tensor = audio_tensor.to(device)
+
+        return audio_tensor
 
 class SpecScaler(nn.Module):
     """
