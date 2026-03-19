@@ -46,4 +46,4 @@ def test_onnx_converting(revision, test_audio):
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-m", "partial"])
+    pytest.main([__file__, "-v"])

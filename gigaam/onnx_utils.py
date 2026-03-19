@@ -32,10 +32,12 @@ def infer_onnx(
     if tokenizer is None and ("ctc" in model_name or "rnnt" in model_name):
         tokenizer = hydra.utils.instantiate(model_cfg.decoding).tokenizer
 
-    input_signal = load_audio(wav_file)
-    input_signal = preprocessor(
-        input_signal.unsqueeze(0), torch.tensor([input_signal.shape[-1]])
-    )[0].numpy()
+    sgn = load_audio(wav_file)
+    input_signal = (
+        preprocessor(sgn.unsqueeze(0), torch.tensor([sgn.shape[-1]]))[0]
+        .detach()
+        .numpy()
+    )
 
     enc_sess = sessions[0]
     enc_inputs = {
@@ -93,9 +95,9 @@ def infer_onnx(
                 token = log_probs[0].argmax(-1)[0][0]
 
                 if token != blank_idx:
-                    prev_token = int(token)
+                    prev_token = token.item()
                     pred_states = pred_outputs[1:]
-                    token_ids.append(int(token))
+                    token_ids.append(token.item())
                     emitted_letters += 1
                 else:
                     break
