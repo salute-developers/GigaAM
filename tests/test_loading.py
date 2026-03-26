@@ -44,13 +44,13 @@ def run_model_method(model, revision, test_audio):
     else:
         result = model.transcribe(test_audio)
         if "e2e" in revision:
-            assert (
-                _predictions[revision] == result
-            ), f"Transcription failed ({revision}): {result}"
+            assert _predictions[revision] == str(
+                result
+            ), f"Transcription failed ({revision}): {str(result)}"
         else:
-            assert (
-                _predictions["asr"] == result
-            ), f"Transcription failed ({revision}): {result}"
+            assert _predictions["asr"] == str(
+                result
+            ), f"Transcription failed ({revision}): {str(result)}"
         logger.info(f"{revision}: Transcription completed")
 
 

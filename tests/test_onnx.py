@@ -41,7 +41,7 @@ def test_onnx_converting(revision, test_audio):
         ), f"{revision}: ONNX emotions probs failed: {pred_probs}"
 
     else:
-        orig_text = model.transcribe(test_audio)
+        orig_text = model.transcribe(test_audio).text
         assert orig_text == result, f"{revision}: ONNX transcribe failed: {result}"
 
 

@@ -82,8 +82,9 @@ def generate_long_audio(duration=60.0, sr=16000, include_silence=True):
         )
         envelope = signal.windows.tukey(len(segment), alpha=0.1)
         segment = segment * envelope
-        start_idx, end_idx = int(current_time * sr), int(current_time * sr) + len(
-            segment
+        start_idx, end_idx = (
+            int(current_time * sr),
+            int(current_time * sr) + len(segment),
         )
         audio[start_idx:end_idx] = segment
         if include_silence and i < len(segment_durations) - 1:
@@ -152,24 +153,30 @@ def test_segmentation_functionality(duration):
 @pytest.mark.parametrize("revision", ["v3_ctc", "v3_e2e_rnnt"])
 def test_transcribe_longform(revision):
     """Test longform transcription for different models"""
+    from gigaam.types import LongformTranscriptionResult, Segment
+
     model = gigaam.load_model(revision)
-    results = model.transcribe_longform(download_long_audio())
+    result = model.transcribe_longform(download_long_audio())
     ref = _predictions[revision]
 
-    assert isinstance(results, list), "Should return list of segments"
-    assert len(results) == len(ref), "Distinct results len from reference"
+    assert isinstance(
+        result, LongformTranscriptionResult
+    ), "Should return LongformTranscriptionResult"
+    assert len(result.segments) == len(ref), "Distinct results len from reference"
 
-    for segment, ref_segment in zip(results, ref):
-        assert "transcription" in segment, "Missing transcription key"
-        assert "boundaries" in segment, "Missing boundaries key"
-        start, end = segment["boundaries"]
+    for segment, ref_segment in zip(result.segments, ref):
+        assert isinstance(segment, Segment), "Should be Segment object"
+        assert hasattr(segment, "text"), "Missing text attribute"
+        assert hasattr(segment, "start"), "Missing start attribute"
+        assert hasattr(segment, "end"), "Missing end attribute"
+        start, end = segment.start, segment.end
         ref_start, ref_end = ref_segment["boundaries"]
         assert (
             abs(start - ref_start) < 0.1 and abs(end - ref_end) < 0.1
         ), f"Segments are not close {start, end} and {ref_start, ref_end}"
         assert (
-            segment["transcription"] == ref_segment["transcription"]
-        ), f"Different transcription: {segment['transcription']} and {ref_segment['transcription']}"
+            segment.text == ref_segment["transcription"]
+        ), f"Different transcription: {segment.text} and {ref_segment['transcription']}"
 
 
 @pytest.mark.parametrize("revision", ["v3_ctc"])
@@ -181,13 +188,16 @@ def test_longform_consistency(revision):
             sf.write(f.name, audio, 16000)
 
             model = gigaam.load_model(revision)
-            results1 = model.transcribe_longform(f.name)
-            results2 = model.transcribe_longform(f.name)
+            result1 = model.transcribe_longform(f.name)
+            result2 = model.transcribe_longform(f.name)
 
-            assert len(results1) == len(results2), "Inconsistent segment count"
-            for seg1, seg2 in zip(results1, results2):
-                assert (
-                    seg1["boundaries"] == seg2["boundaries"]
+            assert len(result1.segments) == len(
+                result2.segments
+            ), "Inconsistent segment count"
+            for seg1, seg2 in zip(result1.segments, result2.segments):
+                assert (seg1.start, seg1.end) == (
+                    seg2.start,
+                    seg2.end,
                 ), "Inconsistent boundaries"
 
         finally:

@@ -37,7 +37,7 @@ git clone https://github.com/salute-developers/GigaAM.git
 cd GigaAM
 
 # Install the package requirements
-pip install -e .
+pip install -e .[torch]
 
 # (optionally) Verify the installation:
 pip install -e ".[tests]"
@@ -108,13 +108,17 @@ model = gigaam.load_model(model_name)
 transcription = model.transcribe(audio_path)
 print(transcription)
 
+# ASR with word-level timestamps
+result = model.transcribe(audio_path, word_timestamps=True)
+for word in result.words:
+    print(f"  [{word.start:.2f} - {word.end:.2f}] {word.text}")
+
 # and long-form ASR
 import os
 os.environ["HF_TOKEN"] = <HF_TOKEN with read access to "pyannote/segmentation-3.0">
-utterances = model.transcribe_longform(long_audio_path)
-for utt in utterances:
-   transcription, (start, end) = utt["transcription"], utt["boundaries"]
-   print(f"[{gigaam.format_time(start)} - {gigaam.format_time(end)}]: {transcription}")
+result = model.transcribe_longform(long_audio_path)
+for segment in result:
+   print(f"[{gigaam.format_time(segment.start)} - {gigaam.format_time(segment.end)}]: {segment.text}")
 
 # Emotion recognition
 model = gigaam.load_model("emo")
