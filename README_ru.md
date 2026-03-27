@@ -36,7 +36,7 @@ git clone https://github.com/salute-developers/GigaAM.git
 cd GigaAM
 
 # Установить зависимости
-pip install -e .
+pip install -e .[torch]
 
 # (опционально) Проверить установку:
 pip install -e ".[tests]"
@@ -107,13 +107,17 @@ model = gigaam.load_model(model_name)
 transcription = model.transcribe(audio_path)
 print(transcription)
 
+# Распознавание речи с таймстемпами на уровне слов
+result = model.transcribe(audio_path, word_timestamps=True)
+for word in result.words:
+    print(f"  [{word.start:.2f} - {word.end:.2f}] {word.text}")
+
 # Распознавание на длинном аудио
 import os
 os.environ["HF_TOKEN"] = "<HF_TOKEN с доступом на чтение к 'pyannote/segmentation-3.0'>"
-utterances = model.transcribe_longform(long_audio_path)
-for utt in utterances:
-   transcription, (start, end) = utt["transcription"], utt["boundaries"]
-   print(f"[{gigaam.format_time(start)} - {gigaam.format_time(end)}]: {transcription}")
+result = model.transcribe_longform(long_audio_path)
+for segment in result:
+   print(f"[{gigaam.format_time(segment.start)} - {gigaam.format_time(segment.end)}]: {segment.text}")
 
 # Распознавание эмоций
 model = gigaam.load_model("emo")

@@ -20,12 +20,14 @@ dependencies = [
     "onnx==1.19.*",
     "onnxruntime==1.23.*",
     "sentencepiece",
-    "torch>=2.5,<2.9",
-    "torchaudio>=2.5,<2.9",
     "tqdm",
 ]
 
 [project.optional-dependencies]
+torch = [
+    "torch>=2.5,<2.9",
+    "torchaudio>=2.5,<2.9",
+]
 longform = [
     "torch==2.8.*",
     "torchaudio==2.8.*",
@@ -40,9 +42,22 @@ tests = [
     "soundfile",
     "librosa",
 ]
+lint = [
+    "black==26.1.0",
+    "isort==7.0.0",
+    "flake8",
+    "mypy",
+    "types-requests",
+]
 
 [project.urls]
 Homepage = "https://github.com/salute-developers/GigaAM/"
 
 [tool.setuptools.packages.find]
 include = ["gigaam"]
+
+[tool.black]
+line-length = 88
+
+[tool.isort]
+profile = "black"

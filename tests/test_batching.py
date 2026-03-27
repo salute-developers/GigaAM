@@ -80,9 +80,7 @@ def compare_outputs(output1, output2, atol=0.03):
     feat1, feat2 = feat1[:, :, :min_len], feat2[:, :, :min_len]
     abs_diff = torch.abs(feat1 - feat2).max().item()
     close = abs_diff < atol
-    return close, {
-        "max_absolute_difference": abs_diff,
-    }
+    return close, {"max_absolute_difference": abs_diff}
 
 
 @pytest.mark.parametrize("revision", ["v3_ctc", "v3_e2e_rnnt"])

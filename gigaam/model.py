@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 import hydra
 import omegaconf
@@ -6,6 +6,7 @@ import torch
 from torch import Tensor, nn
 
 from .preprocess import SAMPLE_RATE, load_audio
+from .types import LongformTranscriptionResult, Segment, TranscriptionResult, Word
 from .utils import onnx_converter
 
 LONGFORM_THRESHOLD = 25 * SAMPLE_RATE
@@ -89,17 +90,59 @@ class GigaAMASR(GigaAM):
         self.head = hydra.utils.instantiate(self.cfg.head)
         self.decoding = hydra.utils.instantiate(self.cfg.decoding)
 
+    def _decode(
+        self,
+        encoded: Tensor,
+        encoded_len: Tensor,
+        audio_length: int,
+        word_timestamps: bool = False,
+    ) -> Tuple[str, Optional[List[Word]]]:
+        """
+        Decode encoder output to text with optional word-level timestamps.
+
+        Args:
+            encoded: Encoder output tensor
+            encoded_len: Length of encoded sequence
+            audio_length: Original audio length in samples
+            word_timestamps: Whether to compute word-level timestamps
+
+        Returns:
+            Tuple of (text, words) where words is None if word_timestamps=False
+        """
+        token_ids, token_frames = self.decoding.decode(self.head, encoded, encoded_len)[
+            0
+        ]
+
+        text = self.decoding.tokenizer.decode(token_ids)
+
+        if not word_timestamps:
+            return text, None
+
+        from .timestamps_utils import compute_frame_shift, frames_to_words
+
+        frame_shift = compute_frame_shift(audio_length, int(encoded_len[0].item()))
+        words = frames_to_words(
+            self.decoding.tokenizer, token_ids, token_frames, frame_shift
+        )
+        return text, words
+
     @torch.inference_mode()
-    def transcribe(self, wav_file: str) -> str:
+    def transcribe(
+        self, wav_file: str, word_timestamps: bool = False
+    ) -> TranscriptionResult:
         """
         Transcribes a short audio file into text.
+        Returns TranscriptionResult with optional word-level timestamps.
         """
         wav, length = self.prepare_wav(wav_file)
         if length.item() > LONGFORM_THRESHOLD:
             raise ValueError("Too long wav file, use 'transcribe_longform' method.")
 
         encoded, encoded_len = self.forward(wav, length)
-        return self.decoding.decode(self.head, encoded, encoded_len)[0]
+        text, words = self._decode(
+            encoded, encoded_len, int(length[0].item()), word_timestamps
+        )
+        return TranscriptionResult(text=text, words=words)
 
     def forward_for_export(self, features: Tensor, feature_lengths: Tensor) -> Tensor:
         """
@@ -147,27 +190,50 @@ class GigaAMASR(GigaAM):
 
     @torch.inference_mode()
     def transcribe_longform(
-        self, wav_file: str, **kwargs
-    ) -> List[Dict[str, Union[str, Tuple[float, float]]]]:
+        self, wav_file: str, word_timestamps: bool = False, **kwargs
+    ) -> LongformTranscriptionResult:
         """
         Transcribes a long audio file by splitting it into segments and
         then transcribing each segment.
+        Returns LongformTranscriptionResult with segments containing optional word-level timestamps.
         """
         from .vad_utils import segment_audio_file
 
-        transcribed_segments = []
         segments, boundaries = segment_audio_file(
             wav_file, SAMPLE_RATE, device=self._device, **kwargs
         )
+
+        result_segments: List[Segment] = []
         for segment, segment_boundaries in zip(segments, boundaries):
             wav = segment.to(self._device).unsqueeze(0).to(self._dtype)
             length = torch.full([1], wav.shape[-1], device=self._device)
             encoded, encoded_len = self.forward(wav, length)
-            result = self.decoding.decode(self.head, encoded, encoded_len)[0]
-            transcribed_segments.append(
-                {"transcription": result, "boundaries": segment_boundaries}
+
+            seg_start = segment_boundaries[0]
+            seg_end = segment_boundaries[1]
+
+            text, words = self._decode(
+                encoded, encoded_len, int(length[0].item()), word_timestamps
             )
-        return transcribed_segments
+
+            if word_timestamps:
+                # Adjust word timestamps to absolute time positions
+                adjusted_words = [
+                    Word(
+                        text=w.text,
+                        start=round(w.start + seg_start, 3),
+                        end=round(w.end + seg_start, 3),
+                    )
+                    for w in words
+                ]
+                result_segments.append(
+                    Segment(
+                        text=text, start=seg_start, end=seg_end, words=adjusted_words
+                    )
+                )
+            else:
+                result_segments.append(Segment(text=text, start=seg_start, end=seg_end))
+        return LongformTranscriptionResult(segments=result_segments)
 
 
 class GigaAMEmo(GigaAM):
