@@ -160,6 +160,10 @@ model = AutoModel.from_pretrained("ai-sage/GigaAM-v3", revision="e2e_rnnt", trus
 
 These and more advanced (e.g. custom audio loading, batching) examples can be found in the [Colab notebook](https://colab.research.google.com/github/salute-developers/GigaAM/blob/main/colab_example.ipynb).
 
+### Triton Inference Server and TensorRT
+
+All speech recognition models can also be used in a server environment in ONNX/TRT format through Triton Inference Server. For setup instructions, model conversion, and deployment details, see the [Triton Inference Server documentation](./triton_scripts/README.md).
+
 ---
 
 ## Citation

@@ -1,0 +1,26 @@
+name: "rnnt_postprocessing"
+backend: "python"
+max_batch_size: 0
+
+input [
+  {
+    name: "encoded"
+    data_type: TYPE_FP32
+    dims: [-1, 768, -1]
+  },
+  {
+    name: "encoded_lengths"
+    data_type: TYPE_INT32
+    dims: [-1]
+  }
+]
+
+output [
+  {
+    name: "texts"
+    data_type: TYPE_STRING
+    dims: [-1]
+  }
+]
+
+instance_group [{ kind: KIND_CPU }]

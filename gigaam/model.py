@@ -65,7 +65,8 @@ class GigaAM(nn.Module):
         """
         Export onnx model encoder to the specified dir.
         """
-        self._to_onnx(dir_path)
+        with self.encoder.onnx_export_mode():
+            self._to_onnx(dir_path)
         omegaconf.OmegaConf.save(self.cfg, f"{dir_path}/{self.cfg.model_name}.yaml")
 
     def _to_onnx(self, dir_path: str = ".") -> None:

@@ -59,23 +59,23 @@ class CTCGreedyDecoding:
         head: "CTCHead",
         encoded: Tensor,
         lengths: Tensor,
+        labels: Optional[Tensor] = None,
     ) -> List[Tuple[List[int], List[int]]]:
         """
         CTC greedy decode: returns (token_ids, token_frames) per sample.
         Token frames are time indices (0..T-1) where a token is emitted.
+        If labels are provided, encoded and head are not used.
         """
-        log_probs = head(encoder_output=encoded)
-        assert (
-            log_probs.ndim == 3
-        ), f"Expected log_probs [B,T,C], got {tuple(log_probs.shape)}"
-        B, T, C = log_probs.shape
-        assert (
-            C == len(self.tokenizer) + 1
-        ), f"Num classes {C} != len(vocab)+1 {len(self.tokenizer)+1}"
+        if labels is None:
+            log_probs = head(encoder_output=encoded)
+            C = log_probs.shape[-1]
+            assert (
+                C == len(self.tokenizer) + 1
+            ), f"Num classes {C} != len(vocab)+1 {len(self.tokenizer)+1}"
+            labels = log_probs.argmax(dim=-1)
 
-        labels = log_probs.argmax(dim=-1)
+        B, T = labels.shape
         device = labels.device
-
         lengths = lengths.to(device=device).clamp(min=0, max=T)
 
         skip_mask = labels != self.blank_id
