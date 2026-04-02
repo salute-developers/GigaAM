@@ -1,0 +1,33 @@
+name: "gigaam_encoder_onnx"
+platform: "onnxruntime_onnx"
+max_batch_size: 0
+
+input [
+  {
+    name: "audio_signal"
+    data_type: TYPE_FP32
+    dims: [-1, 64, -1]
+  },
+  {
+    name: "length"
+    data_type: TYPE_INT64
+    dims: [-1]
+  }
+]
+
+output [
+  {
+    name: "encoded"
+    data_type: TYPE_FP32
+    dims: [-1, 768, -1]
+  },
+  {
+    name: "encoded_len"
+    data_type: TYPE_INT32
+    dims: [-1]
+  }
+]
+
+instance_group [{ kind: KIND_GPU }]
+
+parameters { key: "cudnn_conv_algo_search" value: { string_value: "1"} }

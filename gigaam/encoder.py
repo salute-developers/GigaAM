@@ -1,5 +1,6 @@
 import math
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
@@ -514,12 +515,13 @@ class ConformerEncoder(nn.Module):
 
     def input_example(
         self,
-        batch_size: int = 1,
+        batch_size: int = 8,
         seqlen: int = 200,
     ) -> Tuple[Tensor, Tensor]:
         device = next(self.parameters()).device
-        features = torch.zeros(batch_size, self.feat_in, seqlen)
-        feature_lengths = torch.full([batch_size], features.shape[-1])
+        features = torch.randn(batch_size, self.feat_in, seqlen)
+        feature_lengths = torch.randint(1, seqlen + 1, (batch_size,))
+        feature_lengths[0] = seqlen
         return features.float().to(device), feature_lengths.to(device)
 
     def input_names(self) -> List[str]:
@@ -527,6 +529,21 @@ class ConformerEncoder(nn.Module):
 
     def output_names(self) -> List[str]:
         return ["encoded", "encoded_len"]
+
+    @contextmanager
+    def onnx_export_mode(self):
+        saved = []
+        for layer in self.layers:
+            attn = layer.self_attn
+            saved.append((attn.flash_attn, attn.torch_sdpa_attn))
+            attn.flash_attn = False
+            attn.torch_sdpa_attn = False
+        try:
+            yield
+        finally:
+            for layer, (fa, sdpa) in zip(self.layers, saved):
+                layer.self_attn.flash_attn = fa
+                layer.self_attn.torch_sdpa_attn = sdpa
 
     def dynamic_axes(self) -> Dict[str, Dict[int, str]]:
         return {

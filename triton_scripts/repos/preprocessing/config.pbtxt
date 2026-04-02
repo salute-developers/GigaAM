@@ -1,0 +1,32 @@
+name: "preprocessing"
+backend: "python"
+max_batch_size: 0
+
+input [
+  {
+    name: "audio_batch"
+    data_type: TYPE_FP32
+    dims: [-1]
+  },
+  {
+    name: "audio_lengths"
+    data_type: TYPE_INT64
+    dims: [-1]
+  }
+]
+
+output [
+  {
+    name: "features"
+    data_type: TYPE_FP32
+    dims: [-1, 64, -1]
+  },
+  {
+    name: "feature_lengths"
+    data_type: TYPE_INT64
+    dims: [-1]
+  }
+]
+
+instance_group [{ kind: KIND_CPU }]
+

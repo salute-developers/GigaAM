@@ -1,0 +1,85 @@
+name: "gigaam_rnnt_onnx"
+platform: "ensemble"
+max_batch_size: 0
+
+input [
+  {
+    name: "audio_batch"
+    data_type: TYPE_FP32
+    dims: [-1]
+  },
+  {
+    name: "audio_lengths"
+    data_type: TYPE_INT64
+    dims: [-1]
+  }
+]
+
+output [
+  {
+    name: "texts"
+    data_type: TYPE_STRING
+    dims: [-1]
+  }
+]
+
+ensemble_scheduling {
+  step [
+    {
+      model_name: "preprocessing"
+      model_version: -1
+      input_map {
+        key: "audio_batch"
+        value: "audio_batch"
+      }
+      input_map {
+        key: "audio_lengths"
+        value: "audio_lengths"
+      }
+      output_map {
+        key: "features"
+        value: "preprocessed_features"
+      }
+      output_map {
+        key: "feature_lengths"
+        value: "preprocessed_lengths"
+      }
+    },
+    {
+      model_name: "gigaam_encoder_onnx"
+      model_version: -1
+      input_map {
+        key: "audio_signal"
+        value: "preprocessed_features"
+      }
+      input_map {
+        key: "length"
+        value: "preprocessed_lengths"
+      }
+      output_map {
+        key: "encoded"
+        value: "encoder_encoded"
+      }
+      output_map {
+        key: "encoded_len"
+        value: "encoder_encoded_len"
+      }
+    },
+    {
+      model_name: "rnnt_postprocessing"
+      model_version: -1
+      input_map {
+        key: "encoded"
+        value: "encoder_encoded"
+      }
+      input_map {
+        key: "encoded_lengths"
+        value: "encoder_encoded_len"
+      }
+      output_map {
+        key: "texts"
+        value: "texts"
+      }
+    }
+  ]
+}

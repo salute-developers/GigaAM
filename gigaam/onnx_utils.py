@@ -18,38 +18,46 @@ MAX_LETTERS_PER_FRAME = 3
 
 
 def infer_onnx(
-    wav_file: str,
+    wav_file: Optional[str],
     model_cfg: omegaconf.DictConfig,
-    sessions: List[rt.InferenceSession],
+    sessions: List[Optional[rt.InferenceSession]],
+    enc_features: Optional[np.ndarray] = None,
     preprocessor: Optional[FeatureExtractor] = None,
     tokenizer: Optional[Tokenizer] = None,
 ) -> Union[str, np.ndarray]:
-    """Run ONNX sessions for the model, requires preprocessor instantiating"""
+    """
+    Run ONNX sessions for the model, requires preprocessor instantiating.
+    The first session (the encoder one) and wav_file can be None if enc_features is provided.
+    """
     model_name = model_cfg.model_name
 
-    if preprocessor is None:
+    assert (
+        enc_features is not None or sessions[0] is not None
+    ), "At least one of encoder session or enc_features is required"
+
+    if preprocessor is None and enc_features is None:
         preprocessor = hydra.utils.instantiate(model_cfg.preprocessor)
     if tokenizer is None and ("ctc" in model_name or "rnnt" in model_name):
         tokenizer = hydra.utils.instantiate(model_cfg.decoding).tokenizer
 
-    sgn = load_audio(wav_file)
-    input_signal = (
-        preprocessor(sgn.unsqueeze(0), torch.tensor([sgn.shape[-1]]))[0]
-        .detach()
-        .numpy()
-    )
-
-    enc_sess = sessions[0]
-    enc_inputs = {
-        node.name: data
-        for (node, data) in zip(
-            enc_sess.get_inputs(),
-            [input_signal.astype(DTYPE), [input_signal.shape[-1]]],
+    if enc_features is None:
+        sgn = load_audio(wav_file)
+        input_signal = (
+            preprocessor(sgn.unsqueeze(0), torch.tensor([sgn.shape[-1]]))[0]
+            .detach()
+            .numpy()
         )
-    }
-    enc_features = enc_sess.run(
-        [node.name for node in enc_sess.get_outputs()], enc_inputs
-    )[0]
+        enc_sess = sessions[0]
+        enc_inputs = {
+            node.name: data
+            for (node, data) in zip(
+                enc_sess.get_inputs(),
+                [input_signal.astype(DTYPE), [input_signal.shape[-1]]],
+            )
+        }
+        enc_features = enc_sess.run(
+            [node.name for node in enc_sess.get_outputs()], enc_inputs
+        )[0]
 
     if "emo" in model_name or "ssl" in model_name:
         return enc_features
