@@ -55,7 +55,7 @@ jobs:
 
     - name: Install Python dependencies
       run: |
-        python -m pip install --upgrade pip setuptools wheel
+        python -m pip install --upgrade pip wheel setuptools
         pip install --no-cache-dir torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cpu
         pip install --no-cache-dir -e ".[longform,tests]"
 
@@ -134,15 +134,15 @@ jobs:
     
     - name: Check code formatting with black
       run: |
-        black --check --diff gigaam/ tests/
+        black --check --diff gigaam/ tests/ triton_scripts/
     
     - name: Check imports with isort
       run: |
-        isort --check-only --diff gigaam/ tests/
+        isort --check-only --diff gigaam/ tests/ triton_scripts/
     
     - name: Lint with flake8
       run: |
-        flake8 --ignore=E203,W503,W504 --max-line-length=120 --statistics gigaam/ tests/
+        flake8 --ignore=E203,W503,W504 --max-line-length=120 --statistics gigaam/ tests/ triton_scripts/
     
     - name: Type check with mypy
       run: |
