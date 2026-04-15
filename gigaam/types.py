@@ -1,5 +1,16 @@
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Union
+
+import numpy as np
+from torch import Tensor
+
+
+@dataclass
+class AudioDatasetSample:
+    item: Union[str, np.ndarray, Tensor]
+    duration: float
+    text: Optional[str] = None
+    tokens: Optional[List[int]] = None
 
 
 @dataclass

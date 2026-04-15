@@ -6,12 +6,15 @@ import warnings
 from typing import Any, Tuple
 
 import omegaconf
+import torch
 from torch import Tensor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gigaam  # noqa: E402
 from gigaam.utils import onnx_converter  # noqa: E402
+
+EXPORT_DTYPE = torch.float16
 
 
 # We need to override the forward method to return the argmax of the logits
@@ -25,30 +28,34 @@ def forward_for_export_with_argmax(
     return token_ids, encoded_len.long()
 
 
-def _to_onnx_with_token_ids(self: Any, dir_path: str = ".") -> None:
+def _to_onnx_with_token_ids(
+    self: Any, dir_path: str = ".", dtype: torch.dtype = torch.float32
+) -> None:
     """Convert to ONNX with token ids instead of logits."""
     saved_forward = self.forward
     self.forward = self.forward_for_export
     try:
-        onnx_converter(
-            model_name="model",
-            out_dir=dir_path,
-            module=self,
-            inputs=self.encoder.input_example(),
-            input_names=["features", "feature_lengths"],
-            output_names=["token_ids", "token_ids_lengths"],
-            dynamic_axes={
-                "features": {0: "batch_size", 2: "seq_len"},
-                "feature_lengths": {0: "batch_size"},
-                "token_ids": {0: "batch_size", 1: "seq_len"},
-                "token_ids_lengths": {0: "batch_size"},
-            },
-        )
+        with self.encoder.onnx_export_mode():
+            onnx_converter(
+                model_name="model",
+                out_dir=dir_path,
+                module=self,
+                inputs=self.encoder.input_example(),
+                input_names=["features", "feature_lengths"],
+                output_names=["token_ids", "token_ids_lengths"],
+                dynamic_axes={
+                    "features": {0: "batch_size", 2: "seq_len"},
+                    "feature_lengths": {0: "batch_size"},
+                    "token_ids": {0: "batch_size", 1: "seq_len"},
+                    "token_ids_lengths": {0: "batch_size"},
+                },
+                export_dtype=dtype,
+            )
     finally:
         self.forward = saved_forward
 
 
-def convert_ctc(model: Any) -> tuple[str, str]:
+def convert_ctc(model: Any, dtype: torch.dtype = torch.float16) -> tuple[str, str]:
     save_path = "repos/ctc_encoder_onnx/1"
     postprocessing_dir = "repos/ctc_postprocessing/1"
 
@@ -59,7 +66,7 @@ def convert_ctc(model: Any) -> tuple[str, str]:
     model._to_onnx = types.MethodType(_to_onnx_with_token_ids, model)
 
     try:
-        model.to_onnx(save_path)
+        model.to_onnx(save_path, dtype=dtype)
     finally:
         model.forward_for_export = original_forward
         model._to_onnx = original_to_onnx
@@ -67,12 +74,11 @@ def convert_ctc(model: Any) -> tuple[str, str]:
     return save_path, postprocessing_dir
 
 
-def convert_rnnt(model: Any) -> tuple[str, str]:
+def convert_rnnt(model: Any, dtype: torch.dtype = torch.float16) -> tuple[str, str]:
     save_path = "repos/gigaam_encoder_onnx/1"
     postprocessing_dir = "repos/rnnt_postprocessing/1"
 
-    # Save encoder, decoder and joint parts to onnx
-    model.to_onnx(save_path)
+    model.to_onnx(save_path, dtype=dtype)
 
     rename_onnx(
         f"{save_path}/{model.cfg.model_name}_encoder.onnx",
@@ -132,10 +138,14 @@ def main() -> None:
     model_version = sys.argv[1]
     model = gigaam.load_model(model_version)
 
+    dtype = EXPORT_DTYPE
+    dtype_name = {torch.float16: "fp16", torch.float32: "fp32"}[dtype]
+    print(f"ONNX export dtype: {dtype_name}")
+
     if "ctc" in model_version:
-        save_path, postprocessing_dir = convert_ctc(model)
+        save_path, postprocessing_dir = convert_ctc(model, dtype=dtype)
     else:
-        save_path, postprocessing_dir = convert_rnnt(model)
+        save_path, postprocessing_dir = convert_rnnt(model, dtype=dtype)
 
     # Save config and tokenizer for the postprocessing
     save_and_distribute_config(model, save_path, postprocessing_dir)

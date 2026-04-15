@@ -5,3 +5,5 @@ build
 .DS_Store
 *tmp*
 onnx
+train_utils/data
+train_utils/checkpoints

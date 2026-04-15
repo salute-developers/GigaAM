@@ -115,12 +115,12 @@ def load_model(
     download_root: Optional[str] = None,
 ) -> Union[GigaAM, GigaAMEmo, GigaAMASR]:
     """
-    Load the GigaAM model by name.
+    Load the GigaAM model by name, or a local ``.ckpt`` from fine-tuning with ``train_utils/train.py``.
 
     Parameters
     ----------
     model_name : str
-        The name of the model to load.
+        Model name or a path to a ``.ckpt`` file.
     fp16_encoder:
         Whether to convert encoder weights to FP16 precision.
     use_flash : Optional[bool]
@@ -135,6 +135,25 @@ def load_model(
 
     if download_root is None:
         download_root = _CACHE_DIR
+
+    local_path = os.path.expanduser(model_name)
+    if os.path.isfile(local_path):
+        finetuned = torch.load(local_path, map_location="cpu", weights_only=False)
+        base_name = finetuned["hyper_parameters"]["model_name"]
+        model = load_model(
+            base_name,
+            fp16_encoder=fp16_encoder,
+            use_flash=use_flash,
+            device=device_obj,
+            download_root=download_root,
+        )
+        sd = {
+            k: v
+            for k, v in finetuned["state_dict"].items()
+            if k.startswith(("preprocessor.", "encoder.", "head."))
+        }
+        model.load_state_dict(sd)
+        return model
 
     model_name, model_path = _download_model(model_name, download_root)
     tokenizer_path = _download_tokenizer(model_name, download_root)

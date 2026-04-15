@@ -15,6 +15,7 @@
 ![plot](./assets/gigaam_scheme.svg)
 
 ## Latest News
+* 2026/04 — [model fine-tuning](#model-fine-tuning) (CTC / RNNT), word-level timestamps, [Triton Inference Server](#triton-inference-server-and-tensorrt)
 * 2025/11 — GigaAM-v3: **30%** WER reduction on new data domains; GigaAM-v3-e2e: end-to-end transcription support (**70:30** win in Side-by-Side vs Whisper-large-v3)
 * 2025/06 — Our [research paper on GigaAM](https://arxiv.org/abs/2506.01192) was accepted to InterSpeech 2025!
 * 2024/12 — [MIT License](./LICENSE), GigaAM-v2 (**-15%** and **-12%** WER Reduction for CTC and RNN-T models, respectively), [ONNX export support](#onnx-export-and-inference)
@@ -126,6 +127,10 @@ emotion2prob = model.get_probs(audio_path)
 print(", ".join([f"{emotion}: {prob:.3f}" for emotion, prob in emotion2prob.items()]))
 ```
 
+### Model Fine-tuning
+
+Both CTC and RNNT models can be fine-tuned on custom data using PyTorch Lightning. For a detailed description of all training arguments, see [`train_utils/README.md`](./train_utils/README.md). End-to-end examples with different VRAM constraints are available in [`train_utils/example.ipynb`](./train_utils/example.ipynb).
+
 ### Loading from Hugging Face
 
 > **Note:** Install requirements from the [example](./colab_example.ipynb).
@@ -138,7 +143,7 @@ model = AutoModel.from_pretrained("ai-sage/GigaAM-v3", revision="e2e_rnnt", trus
 
 ### ONNX Export and Inference
 
-> **Note:** GPU support can be enabled with `pip install onnxruntime-gpu==1.23.*` if applicable.
+> **Note:** `to_onnx` exports in **fp32** by default. Pass `dtype=torch.float16` for GPU deployment — it is faster and uses less VRAM. GPU support can be enabled with uninstalling onnxruntime and running `pip install onnxruntime-gpu==1.22.*`.
 
 1. Export the model to ONNX using the `model.to_onnx` method:
    ```python
@@ -146,7 +151,7 @@ model = AutoModel.from_pretrained("ai-sage/GigaAM-v3", revision="e2e_rnnt", trus
    model_version = "v3_ctc"  # Options: any version
 
    model = gigaam.load_model(model_version)
-   model.to_onnx(dir_path=onnx_dir)
+   model.to_onnx(dir_path=onnx_dir, dtype=torch.float32)  # or fp16 (recommended for GPU)
    ```
 
 2. Run ONNX inference:
@@ -154,8 +159,12 @@ model = AutoModel.from_pretrained("ai-sage/GigaAM-v3", revision="e2e_rnnt", trus
    from gigaam.onnx_utils import load_onnx, infer_onnx
 
    sessions, model_cfg = load_onnx(onnx_dir, model_version)
-   result = infer_onnx(audio_path, model_cfg, sessions)
-   print(result)  # string for ctc / rnnt, np.ndarray for ssl / emo
+   result = infer_onnx([audio_path], model_cfg, sessions)
+   print(result[0])
+
+   # or use the whole dataset
+   texts = infer_onnx("/path/to/eval/manifest.tsv", model_cfg, sessions)
+   print(texts[0])
    ```
 
 These and more advanced (e.g. custom audio loading, batching) examples can be found in the [Colab notebook](https://colab.research.google.com/github/salute-developers/GigaAM/blob/main/colab_example.ipynb).

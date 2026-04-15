@@ -59,20 +59,17 @@ class CTCGreedyDecoding:
         head: "CTCHead",
         encoded: Tensor,
         lengths: Tensor,
-        labels: Optional[Tensor] = None,
-    ) -> List[Tuple[List[int], List[int]]]:
+    ) -> List[Tuple[str, List[int], List[int]]]:
         """
-        CTC greedy decode: returns (token_ids, token_frames) per sample.
+        CTC greedy decode: returns (text, token_ids, token_frames) per sample.
         Token frames are time indices (0..T-1) where a token is emitted.
-        If labels are provided, encoded and head are not used.
         """
-        if labels is None:
-            log_probs = head(encoder_output=encoded)
-            C = log_probs.shape[-1]
-            assert (
-                C == len(self.tokenizer) + 1
-            ), f"Num classes {C} != len(vocab)+1 {len(self.tokenizer)+1}"
-            labels = log_probs.argmax(dim=-1)
+        log_probs = head(encoder_output=encoded)
+        C = log_probs.shape[-1]
+        assert (
+            C == len(self.tokenizer) + 1
+        ), f"Num classes {C} != len(vocab)+1 {len(self.tokenizer)+1}"
+        labels = log_probs.argmax(dim=-1)
 
         B, T = labels.shape
         device = labels.device
@@ -93,10 +90,17 @@ class CTCGreedyDecoding:
         ids_splits = token_ids_flat.cpu().split(counts)
         fr_splits = token_frames_flat.cpu().split(counts)
 
-        return [(ids.tolist(), fr.tolist()) for ids, fr in zip(ids_splits, fr_splits)]
+        return [
+            (self.tokenizer.decode(ids.tolist()), ids.tolist(), fr.tolist())
+            for ids, fr in zip(ids_splits, fr_splits)
+        ]
 
 
 class RNNTGreedyDecoding:
+    """
+    Class for performing greedy decoding of RNN-T outputs.
+    """
+
     def __init__(
         self,
         vocabulary: List[str],
@@ -107,47 +111,19 @@ class RNNTGreedyDecoding:
         self.blank_id = len(self.tokenizer)
         self.max_symbols = max_symbols_per_step
 
-    def _greedy_decode(
-        self,
-        head: "RNNTHead",
-        x: Tensor,
-        seqlen: Tensor,
-    ) -> Tuple[List[int], List[int]]:
-        """
-        Greedy decode a single sequence.
-        Returns (token_ids, token_frames).
-        Token frames are encoder time indices t where a token is emitted.
-        """
-        T = int(seqlen.item()) if torch.is_tensor(seqlen) else int(seqlen)
+    @staticmethod
+    def _cat_states(states):
+        """Pack per-sample LSTM states into batched (h, c)."""
+        hs = [s[0] for s in states]
+        cs = [s[1] for s in states]
+        return torch.cat(hs, dim=1), torch.cat(cs, dim=1)
 
-        hyp: List[int] = []
-        token_frames: List[int] = []
-        dec_state: Optional[Tensor] = None
-
-        last_label: Optional[Tensor] = None
-
-        last_label_buf = torch.empty((1, 1), device=x.device, dtype=torch.long)
-
-        for t in range(T):
-            f = x[t, :, :].unsqueeze(1)
-            new_symbols = 0
-
-            while new_symbols < self.max_symbols:
-                g, hidden = head.decoder.predict(last_label, dec_state)
-                k = int(head.joint.joint(f, g)[0, 0, 0, :].argmax(0).item())
-
-                if k == self.blank_id:
-                    break
-
-                hyp.append(k)
-                token_frames.append(t)
-
-                dec_state = hidden
-                last_label_buf.fill_(k)
-                last_label = last_label_buf
-                new_symbols += 1
-
-        return hyp, token_frames
+    @staticmethod
+    def _split_state(state):
+        """Unpack batched (h, c) into per-sample states."""
+        h, c = state
+        b = h.shape[1]
+        return [(h[:, i : i + 1], c[:, i : i + 1]) for i in range(b)]
 
     @torch.inference_mode()
     def decode(
@@ -155,16 +131,77 @@ class RNNTGreedyDecoding:
         head: "RNNTHead",
         encoded: Tensor,
         enc_len: Tensor,
-    ) -> List[Tuple[List[int], List[int]]]:
+    ) -> List[Tuple[str, List[int], List[int]]]:
         """
-        Decode RNN-T outputs for a batch.
-        Returns (token_ids, token_frames) per sample.
+        RNN-T greedy decode: returns (text, token_ids, token_frames) per sample.
+        Token frames are encoder time indices where tokens are emitted.
         """
-        B = encoded.shape[0]
-        encoded = encoded.transpose(1, 2)
+        x = encoded.transpose(1, 2)  # [B, T, D]
+        B, T, _ = x.shape
+        device = x.device
 
-        results: List[Tuple[List[int], List[int]]] = []
-        for i in range(B):
-            inseq = encoded[i, :, :].unsqueeze(1)
-            results.append(self._greedy_decode(head, inseq, enc_len[i]))
-        return results
+        hyps: List[List[int]] = [[] for _ in range(B)]
+        token_frames: List[List[int]] = [[] for _ in range(B)]
+        last_label: List[Optional[Tensor]] = [None] * B
+        dec_state: List[Optional[Tuple[Tensor, Tensor]]] = [None] * B
+
+        def emit_batch(batch_idx: List[int], t: int, fresh: bool) -> List[int]:
+            """One batched predictor+joint step; returns samples that emitted non-blank."""
+            idx = torch.tensor(batch_idx, device=device, dtype=torch.long)
+            f = x[idx, t : t + 1, :]  # [b, 1, D]
+
+            if fresh:
+                g, hidden = head.decoder.predict(None, None, batch_size=len(batch_idx))
+            else:
+                labels = torch.cat([last_label[i] for i in batch_idx], dim=0)  # [b, 1]
+                state = self._cat_states([dec_state[i] for i in batch_idx])
+                g, hidden = head.decoder.predict(
+                    labels, state, batch_size=len(batch_idx)
+                )
+
+            k = head.joint.joint(f, g)[:, 0, 0, :].argmax(dim=-1)  # [b]
+            emit = k.ne(self.blank_id)
+
+            if not emit.any():
+                return []
+
+            hidden_parts = self._split_state(hidden)
+            out = []
+
+            for p in emit.nonzero(as_tuple=False).squeeze(1).tolist():
+                bi = batch_idx[p]
+                tok = int(k[p])
+
+                hyps[bi].append(tok)
+                token_frames[bi].append(t)
+                last_label[bi] = k[p : p + 1].view(1, 1)
+                dec_state[bi] = hidden_parts[p]
+                out.append(bi)
+
+            return out
+
+        enc_len = enc_len.cpu()
+        for t in range(T):
+            active = (t < enc_len).nonzero(as_tuple=False).squeeze(1).tolist()
+            if not active:
+                break
+
+            for _ in range(self.max_symbols):
+                if not active:
+                    break
+
+                fresh = [i for i in active if dec_state[i] is None]
+                stateful = [i for i in active if dec_state[i] is not None]
+
+                next_active = []
+                if fresh:
+                    next_active.extend(emit_batch(fresh, t, fresh=True))
+                if stateful:
+                    next_active.extend(emit_batch(stateful, t, fresh=False))
+
+                if not next_active:
+                    break
+
+                active = next_active
+
+        return [(self.tokenizer.decode(h), h, tf) for h, tf in zip(hyps, token_frames)]

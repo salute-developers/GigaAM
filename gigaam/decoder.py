@@ -46,10 +46,10 @@ class RNNTJoint(nn.Module):
         pred = self.pred(decoder_out).unsqueeze(1)
         return self.joint_net(enc + pred).log_softmax(-1)
 
-    def input_example(self) -> Tuple[Tensor, Tensor]:
+    def input_example(self, batch_size: int = 8) -> Tuple[Tensor, Tensor]:
         device = next(self.parameters()).device
-        enc = torch.zeros(1, self.enc_hidden, 1)
-        dec = torch.zeros(1, self.pred_hidden, 1)
+        enc = torch.zeros(batch_size, self.enc_hidden, 1)
+        dec = torch.zeros(batch_size, self.pred_hidden, 1)
         return enc.float().to(device), dec.float().to(device)
 
     def input_names(self) -> List[str]:
@@ -57,6 +57,13 @@ class RNNTJoint(nn.Module):
 
     def output_names(self) -> List[str]:
         return ["joint"]
+
+    def dynamic_axes(self) -> Dict[str, Dict[int, str]]:
+        return {
+            "enc": {0: "batch_size"},
+            "dec": {0: "batch_size"},
+            "joint": {0: "batch_size"},
+        }
 
     def forward(self, enc: Tensor, dec: Tensor) -> Tensor:
         return self.joint(enc.transpose(1, 2), dec.transpose(1, 2))
@@ -94,18 +101,32 @@ class RNNTDecoder(nn.Module):
         g, hid = self.lstm(emb.transpose(0, 1), state)
         return g.transpose(0, 1), hid
 
-    def input_example(self) -> Tuple[Tensor, Tensor, Tensor]:
+    def input_example(self, batch_size: int = 8) -> Tuple[Tensor, Tensor, Tensor]:
         device = next(self.parameters()).device
-        label = torch.tensor([[0]]).to(device)
-        hidden_h = torch.zeros(1, 1, self.pred_hidden).to(device)
-        hidden_c = torch.zeros(1, 1, self.pred_hidden).to(device)
+        label = torch.zeros(batch_size, 1, dtype=torch.long).to(device)
+        hidden_h = torch.zeros(self.lstm.num_layers, batch_size, self.pred_hidden).to(
+            device
+        )
+        hidden_c = torch.zeros(self.lstm.num_layers, batch_size, self.pred_hidden).to(
+            device
+        )
         return label, hidden_h, hidden_c
 
     def input_names(self) -> List[str]:
-        return ["x", "h", "c"]
+        return ["x", "hi", "ci"]
 
     def output_names(self) -> List[str]:
-        return ["dec", "h", "c"]
+        return ["dec", "ho", "co"]
+
+    def dynamic_axes(self) -> Dict[str, Dict[int, str]]:
+        return {
+            "x": {0: "batch_size"},
+            "hi": {1: "batch_size"},
+            "ci": {1: "batch_size"},
+            "dec": {0: "batch_size"},
+            "ho": {1: "batch_size"},
+            "co": {1: "batch_size"},
+        }
 
     def forward(self, x: Tensor, h: Tensor, c: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         """

@@ -15,6 +15,7 @@
 ![plot](./assets/gigaam_scheme.svg)
 
 ## Последние обновления
+* **2026/04** — [дообучение моделей](#дообучение-моделей) (CTC / RNNT), таймстемпы на уровне слов, [Triton Inference Server](#triton-inference-server-и-tensorrt)
 * **2025/11** — GigaAM-v3: снижение WER на **30%** на новых доменах данных; GigaAM-v3-e2e: end-to-end распознавание речи (**70:30** в side-by-side сравнении против Whisper-large-v3)
 * **2025/06** — Наша [научная статья о GigaAM](https://arxiv.org/abs/2506.01192) принята на InterSpeech 2025!
 * **2024/12** — [MIT-лицензия](./LICENSE), GigaAM-v2 (**снижение WER на 15% и 12%** для CTC и RNN-T моделей), [поддержка экспорта в ONNX](#конвертация-в-onnx-и-использование-графа)
@@ -125,6 +126,10 @@ emotion2prob = model.get_probs(audio_path)
 print(", ".join([f"{emotion}: {prob:.3f}" for emotion, prob in emotion2prob.items()]))
 ```
 
+### Дообучение моделей
+
+CTC и RNNT модели можно дообучать на собственных данных с помощью PyTorch Lightning. Подробное описание всех аргументов обучения — в [`train_utils/README.md`](./train_utils/README.md). Примеры с разными ограничениями VRAM доступны в [`train_utils/example.ipynb`](./train_utils/example.ipynb).
+
 ### Загрузка из Hugging Face
 
 > Используйте установку зависимостей из [примера](./colab_example.ipynb).
@@ -137,7 +142,7 @@ model = AutoModel.from_pretrained("ai-sage/GigaAM-v3", revision="e2e_rnnt", trus
 
 ### Конвертация в ONNX и использование графа
 
-> GPU будет использоваться после установки `pip install onnxruntime-gpu==1.23.*` (если доступно).
+> **Примечание:** `to_onnx` по умолчанию экспортирует в **fp32**. Для GPU рекомендуется передать `dtype=torch.float16` — это ускоряет инференс и снижает потребление VRAM. GPU будет использоваться после удаления onnxruntime и установки `pip install onnxruntime-gpu==1.22.*`.
 
 1. Экспорт модели в ONNX с помощью метода `model.to_onnx`:
    ```python
@@ -145,7 +150,7 @@ model = AutoModel.from_pretrained("ai-sage/GigaAM-v3", revision="e2e_rnnt", trus
    model_version = "v3_ctc"  # Варианты: любая версия модели
 
    model = gigaam.load_model(model_version)
-   model.to_onnx(dir_path=onnx_dir)
+   model.to_onnx(dir_path=onnx_dir, dtype=torch.float32)  # или fp16 (рекомендовано для GPU)
    ```
 
 2. Запуск с использованием ONNX:

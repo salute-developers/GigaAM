@@ -72,11 +72,11 @@ python run_client.py ctc trt audio1.wav audio2.wav audio3.wav
 
 Forward pass time in seconds on CUDA for the first 4 segments from `long_example.wav` (VAD-segmented, ~65s total audio). For torch/onnx — both single-sample and batched inference are shown.
 
-| Backend       | v3_ctc          | v3_e2e_rnnt     |
-|:--------------|:----------------|:----------------|
-| triton/trt    | 0.034 ± 0.000   | 0.403 ± 0.008   |
-| triton/onnx   | 0.046 ± 0.001   | 0.413 ± 0.005   |
-| onnx (batch)  | 0.037 ± 0.004   | 0.949 ± 0.017   |
-| onnx          | 0.047 ± 0.001   | 1.093 ± 0.045   |
-| torch (batch) | 0.036 ± 0.002   | 0.919 ± 0.002   |
-| torch         | 0.112 ± 0.003   | 1.008 ± 0.001   |
+| Backend         | v3_ctc          | v3_e2e_rnnt     |
+|:----------------|:----------------|:----------------|
+| triton/trt      | 0.034 ± 0.000   | 0.403 ± 0.008   |
+| triton/onnx     | 0.046 ± 0.001   | 0.434 ± 0.005   |
+| onnx (bs=4)     | 0.037 ± 0.004   | 0.470 ± 0.017   |
+| onnx (b=1)      | 0.047 ± 0.001   | 1.561 ± 0.014   |
+| torch (bs=4)    | 0.036 ± 0.002   | 0.539 ± 0.012   |
+| torch (bs=1)    | 0.112 ± 0.003   | 1.517 ± 0.028   |

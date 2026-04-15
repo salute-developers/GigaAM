@@ -6,7 +6,7 @@ import omegaconf
 import onnxruntime as rt
 
 from gigaam.decoding import Tokenizer
-from gigaam.onnx_utils import infer_onnx
+from gigaam.onnx_utils import _decode_rnnt_batch
 
 
 class TritonPythonModel:
@@ -70,8 +70,6 @@ class TritonPythonModel:
             sess_options=opts,
         )
 
-        self.pred_hidden = cfg.head.decoder.pred_hidden
-
     def execute(self, requests: Any) -> List[Any]:
         import triton_python_backend_utils as pb_utils  # type: ignore
 
@@ -86,17 +84,13 @@ class TritonPythonModel:
             encoded_np = encoded.as_numpy()
             encoded_lengths_np = encoded_lengths.as_numpy()
 
-            texts = [
-                infer_onnx(
-                    wav_file=None,
-                    model_cfg=self.cfg,
-                    sessions=[None, self.pred_sess, self.joint_sess],
-                    enc_features=encoded_np[i : i + 1, :, : encoded_lengths_np[i]],
-                    tokenizer=self.tokenizer,
-                )
-                for i in range(encoded_np.shape[0])
-            ]
-
+            texts = _decode_rnnt_batch(
+                encoded_np,
+                encoded_lengths_np,
+                self.cfg,
+                [None, self.pred_sess, self.joint_sess],
+                self.tokenizer,
+            )
             texts_bytes = [text.encode("utf-8") for text in texts]
             texts_array = np.array(texts_bytes, dtype=object)
 

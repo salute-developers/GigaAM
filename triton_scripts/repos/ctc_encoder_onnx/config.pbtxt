@@ -5,7 +5,7 @@ max_batch_size: 0
 input [
   {
     name: "features"
-    data_type: TYPE_FP32
+    data_type: TYPE_FP16
     dims: [-1, 64, -1]
   },
   {
