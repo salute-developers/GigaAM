@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from torch.utils.checkpoint import checkpoint
 
 try:
     from flash_attn import flash_attn_func
@@ -16,6 +17,16 @@ except Exception as err:
     IMPORT_FLASH_ERR = err
 
 from .utils import apply_masked_flash_attn, apply_rotary_pos_emb
+
+
+def _conformer_layer_fwd(
+    layer: nn.Module,
+    x: Tensor,
+    pos_emb: Union[Tensor, List[Tensor]],
+    att_mask: Optional[Tensor],
+    pad_mask: Optional[Tensor],
+) -> Tensor:
+    return layer(x=x, pos_emb=pos_emb, att_mask=att_mask, pad_mask=pad_mask)
 
 
 class StridingSubsampling(nn.Module):
@@ -169,6 +180,7 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
     ) -> Tensor:
         q, k, v = self.forward_qkv(query, key, value)
         q = q.transpose(1, 2)
+        pos_emb = pos_emb.to(dtype=self.linear_pos.weight.dtype)
         p = self.linear_pos(pos_emb)
         p = p.view(pos_emb.shape[0], -1, self.h, self.d_k).transpose(1, 2)
         q_with_bias_u = (q + self.pos_bias_u).transpose(1, 2)
@@ -475,9 +487,11 @@ class ConformerEncoder(nn.Module):
         conv_norm_type: str = "batch_norm",
         conv_kernel_size: int = 31,
         flash_attn: bool = False,
+        activation_checkpointing: bool = False,
     ):
         super().__init__()
         self.feat_in = feat_in
+        self.activation_checkpointing = activation_checkpointing
         assert self_attention_model in [
             "rotary",
             "rel_pos",
@@ -577,11 +591,22 @@ class ConformerEncoder(nn.Module):
         pad_mask = ~pad_mask
 
         for layer in self.layers:
-            audio_signal = layer(
-                x=audio_signal,
-                pos_emb=pos_emb,
-                att_mask=att_mask,
-                pad_mask=pad_mask,
-            )
+            if self.activation_checkpointing and self.training:
+                audio_signal = checkpoint(
+                    _conformer_layer_fwd,
+                    layer,
+                    audio_signal,
+                    pos_emb,
+                    att_mask,
+                    pad_mask,
+                    use_reentrant=False,
+                )
+            else:
+                audio_signal = layer(
+                    x=audio_signal,
+                    pos_emb=pos_emb,
+                    att_mask=att_mask,
+                    pad_mask=pad_mask,
+                )
 
         return audio_signal.transpose(1, 2), length

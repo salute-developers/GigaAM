@@ -74,7 +74,7 @@ class TritonPythonModel:
                     batch_audio, batch_lengths
                 )
 
-            features_np = features.detach().cpu().numpy().astype(np.float32)
+            features_np = features.detach().cpu().numpy().astype(np.float16)
             feature_lengths_np = feature_lengths.detach().cpu().numpy().astype(np.int64)
 
             output_tensors = [

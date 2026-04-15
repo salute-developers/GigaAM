@@ -19,28 +19,37 @@ dependencies = [
     "omegaconf==2.3.*",
     "onnx==1.19.*",
     "onnxruntime==1.23.*",
+    "soundfile",
     "sentencepiece",
     "tqdm",
 ]
 
 [project.optional-dependencies]
+# Why torch is optional: often preinstalled and reinstall is slow.
+# Older builds also work, pinned extras are recommended.
 torch = [
-    "torch>=2.5,<2.9",
-    "torchaudio>=2.5,<2.9",
+    "torch>=2.6",
+    "torchaudio>=2.6",
 ]
 longform = [
-    "torch==2.8.*",
-    "torchaudio==2.8.*",
-    "pyannote.audio==4.0",
-    "torchcodec==0.7",
     "numba>=0.62",
+    "pyannote.audio==4.0.*",
+    "pyarrow>=23",
+    "torch==2.10.*",
+    "torchaudio==2.10.*",
+    "torchcodec==0.10",
+    "transformers==5.*",
+]
+train = [
+    "editdistance",
+    "lightning>=2.6",
+    "tensorboard>=2.20",
+    "wandb>=0.25",
 ]
 tests = [
     "pytest",
     "pytest-cov",
     "scipy",
-    "soundfile",
-    "librosa",
 ]
 lint = [
     "black==26.1.0",

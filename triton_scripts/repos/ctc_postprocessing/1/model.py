@@ -3,9 +3,9 @@ from typing import Any, Dict, List
 
 import numpy as np
 import omegaconf
-import torch
 
-from gigaam.decoding import CTCGreedyDecoding
+from gigaam.decoding import Tokenizer
+from gigaam.onnx_utils import _decode_ctc_batch
 
 
 class TritonPythonModel:
@@ -30,7 +30,7 @@ class TritonPythonModel:
         else:
             tokenizer_path = None
 
-        self.decoding = CTCGreedyDecoding(vocabulary=vocab, model_path=tokenizer_path)
+        self.tokenizer = Tokenizer(vocab=vocab, model_path=tokenizer_path)
 
     def execute(self, requests: Any) -> List[Any]:
         import triton_python_backend_utils as pb_utils  # type: ignore
@@ -46,13 +46,11 @@ class TritonPythonModel:
             token_ids_np = token_ids.as_numpy()
             token_ids_lengths_np = token_ids_lengths.as_numpy()
 
-            results = self.decoding.decode(
-                head=None,
-                encoded=None,
-                lengths=torch.from_numpy(token_ids_lengths_np),
-                labels=torch.from_numpy(token_ids_np),
+            texts = _decode_ctc_batch(
+                token_ids_np,
+                token_ids_lengths_np,
+                self.tokenizer,
             )
-            texts = [self.decoding.tokenizer.decode(result[0]) for result in results]
 
             texts_bytes = [text.encode("utf-8") for text in texts]
             texts_array = np.array(texts_bytes, dtype=object)
