@@ -1,5 +1,6 @@
 import csv
 import os
+import urllib.request
 import warnings
 from collections.abc import Iterable
 from pathlib import Path
@@ -8,7 +9,6 @@ from typing import Dict, List, Optional, Tuple, Union, cast
 import numpy as np
 import soundfile as sf
 import torch
-import torch.nn.functional as F
 import torchaudio
 from torch import Tensor
 from torch.jit import TracerWarning
@@ -116,13 +116,13 @@ def apply_masked_flash_attn(
     from flash_attn import flash_attn_varlen_func
     from flash_attn.bert_padding import pad_input, unpad_input
 
-    pad_mask = ~mask[:, 0, :]
+    pad_mask = ~mask if mask.dim() == 2 else ~mask[:, 0, :]
     b, t = pad_mask.shape
     q = q.view(b, t, h * d_k)
     k = k.view(b, t, h * d_k)
     v = v.view(b, t, h * d_k)
 
-    q_unpad, indices_q, _, max_seqlen_q = unpad_input(q, pad_mask)[:4]
+    q_unpad, indices_q, cu_seqlens_q, max_seqlen_q = unpad_input(q, pad_mask)[:4]
     q_unpad = rearrange(q_unpad, "nnz (h d) -> nnz h d", h=h)
 
     k_unpad = unpad_input(k, pad_mask)[0]
@@ -130,10 +130,6 @@ def apply_masked_flash_attn(
 
     v_unpad = unpad_input(v, pad_mask)[0]
     v_unpad = rearrange(v_unpad, "nnz (h d) -> nnz h d", h=h)
-
-    lengths_q = pad_mask.sum(1).to(torch.int32).to(q.device)
-    cu_seqlens_q = F.pad(lengths_q.cumsum(0), (1, 0), value=0).to(torch.int32)
-    max_seqlen_q = torch.max(lengths_q)
 
     output_unpad = flash_attn_varlen_func(
         q_unpad,
@@ -159,8 +155,9 @@ def download_short_audio() -> str:
     """Download test audio file if not exists"""
     audio_file = "example.wav"
     if not os.path.exists(audio_file):
-        os.system(
-            'wget -O example.wav "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/example.wav"'
+        urllib.request.urlretrieve(
+            "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/example.wav",
+            audio_file,
         )
     assert os.path.exists(audio_file), "Short audio file not found"
     return audio_file
@@ -170,8 +167,9 @@ def download_long_audio() -> str:
     """Download test audio file if not exists"""
     audio_file = "long_example.wav"
     if not os.path.exists(audio_file):
-        os.system(
-            'wget -O long_example.wav "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/long_example.wav"'
+        urllib.request.urlretrieve(
+            "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/long_example.wav",
+            audio_file,
         )
     assert os.path.exists(audio_file), "Long audio file not found"
     return audio_file

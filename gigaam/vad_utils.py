@@ -1,5 +1,5 @@
 import os
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import torch
 from huggingface_hub import snapshot_download
@@ -11,7 +11,7 @@ from torch.torch_version import TorchVersion
 
 from .preprocess import load_audio
 
-_PIPELINE = None
+_PIPELINES: Dict[Tuple[str, str], Pipeline] = {}
 
 
 def resolve_local_segmentation_path(model_id: str) -> str:
@@ -65,16 +65,18 @@ def get_pipeline(
     The pipeline is loaded only once and reused across subsequent calls.
     It requires the Hugging Face API token to be set in the HF_TOKEN environment variable.
     """
-    global _PIPELINE
-    if _PIPELINE is not None:
-        return _PIPELINE.to(device)
+    key = (model_id, str(device))
+    if key in _PIPELINES:
+        return _PIPELINES[key]
 
     model = load_segmentation_model(model_id=model_id)
 
-    _PIPELINE = VoiceActivityDetection(segmentation=model)
-    _PIPELINE.instantiate({"min_duration_on": 0.0, "min_duration_off": 0.0})
+    pipeline = VoiceActivityDetection(segmentation=model)
+    pipeline.instantiate({"min_duration_on": 0.0, "min_duration_off": 0.0})
+    pipeline = pipeline.to(device)
+    _PIPELINES[key] = pipeline
 
-    return _PIPELINE.to(device)
+    return pipeline
 
 
 def segment_audio_file(

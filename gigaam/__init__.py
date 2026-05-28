@@ -97,6 +97,33 @@ def hash_path(ckpt_path: str) -> str:
     return hashlib.md5(open(ckpt_path, "rb").read()).hexdigest()
 
 
+def _omegaconf_safe_globals():
+    from typing import Any
+
+    from omegaconf import DictConfig, ListConfig
+    from omegaconf import _utils as omegaconf_utils
+    from omegaconf import base as omegaconf_base
+    from omegaconf import nodes as omegaconf_nodes
+
+    safe = [
+        Any,
+        DictConfig,
+        ListConfig,
+    ]
+    for module in (omegaconf_base, omegaconf_nodes, omegaconf_utils):
+        for obj in vars(module).values():
+            if isinstance(obj, type) and getattr(obj, "__module__", "").startswith(
+                "omegaconf"
+            ):
+                safe.append(obj)
+    return list(dict.fromkeys(safe))
+
+
+def _load_checkpoint(ckpt_path: str):
+    with torch.serialization.safe_globals(_omegaconf_safe_globals()):
+        return torch.load(ckpt_path, map_location="cpu", weights_only=True)
+
+
 def _normalize_device(device: Optional[Union[str, torch.device]]) -> torch.device:
     """Normalize device parameter to torch.device."""
     if device is None:
@@ -138,7 +165,7 @@ def load_model(
 
     local_path = os.path.expanduser(model_name)
     if os.path.isfile(local_path):
-        finetuned = torch.load(local_path, map_location="cpu", weights_only=False)
+        finetuned = _load_checkpoint(local_path)
         base_name = finetuned["hyper_parameters"]["model_name"]
         model = load_model(
             base_name,
@@ -164,7 +191,7 @@ def load_model(
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=(FutureWarning))
-        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+        checkpoint = _load_checkpoint(model_path)
 
     if use_flash is not None:
         checkpoint["cfg"].encoder.flash_attn = use_flash

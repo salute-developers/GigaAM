@@ -143,7 +143,7 @@ class MultiHeadAttention(nn.Module, ABC):
         """
         b = value.size(0)
         if mask is not None:
-            mask = mask.unsqueeze(1)
+            mask = mask[:, None, None, :] if mask.dim() == 2 else mask.unsqueeze(1)
             scores = scores.masked_fill(mask, -10000.0)
             attn = torch.softmax(scores, dim=-1).masked_fill(mask, 0.0)
         else:
@@ -228,7 +228,12 @@ class RotaryPositionMultiHeadAttention(MultiHeadAttention):
             scores = scores.view(b, -1, self.h * self.d_k)
             return self.linear_out(scores)
         elif self.torch_sdpa_attn:
-            attn_mask = None if mask is None else ~mask.unsqueeze(1)
+            if mask is None:
+                attn_mask = None
+            elif mask.dim() == 2:
+                attn_mask = ~mask[:, None, None, :]
+            else:
+                attn_mask = ~mask.unsqueeze(1)
             attn_output = F.scaled_dot_product_attention(
                 q,
                 k,
@@ -568,27 +573,26 @@ class ConformerEncoder(nn.Module):
         }
 
     def forward(self, audio_signal: Tensor, length: Tensor) -> Tuple[Tensor, Tensor]:
-        if not hasattr(self.pos_enc, "pe"):
-            self.pos_enc.extend_pe(self.pos_emb_max_len, audio_signal.device)
-
         audio_signal, length = self.pre_encode(
             x=audio_signal.transpose(1, 2), lengths=length
         )
 
         max_len = audio_signal.size(1)
+        self.pos_enc.extend_pe(
+            max(self.pos_emb_max_len, max_len),
+            audio_signal.device,
+        )
         audio_signal, pos_emb = self.pos_enc(x=audio_signal)
 
-        pad_mask = torch.arange(0, max_len, device=audio_signal.device).expand(
+        valid_mask = torch.arange(0, max_len, device=audio_signal.device).expand(
             length.size(0), -1
         ) < length.unsqueeze(-1)
 
         att_mask = None
         if audio_signal.shape[0] > 1:
-            att_mask = pad_mask.unsqueeze(1).repeat([1, max_len, 1])
-            att_mask = torch.logical_and(att_mask, att_mask.transpose(1, 2))
-            att_mask = ~att_mask
+            att_mask = ~valid_mask
 
-        pad_mask = ~pad_mask
+        pad_mask = ~valid_mask
 
         for layer in self.layers:
             if self.activation_checkpointing and self.training:
