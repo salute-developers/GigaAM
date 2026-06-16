@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>{{ meeting.title }}</title>
+<style>
+/* ============================================================
+   Протокол встречи · шаблон v2 для WeasyPrint (>= 60)
+   Шрифты: Golos Text (текст, спроектирован под русский),
+           IBM Plex Mono (ID, таймкоды, ссылки на сегменты).
+   ============================================================ */
+
+:root {
+  --navy:    #13264D;
+  --ink:     #1A2233;
+  --muted:   #5A6478;
+  --faint:   #94A0B4;
+  --line:    #E4E9F1;
+  --hair:    #EDF1F6;
+  --tint:    #F2F5FA;
+  --tint2:   #F7F9FC;
+  --accent:  #2563EB;
+  --acc-soft:#EAF1FD;
+  --warn-bg: #FCF1DC;
+  --warn-fg: #8A5A07;
+  --risk:    #B3362C;
+  --risk-bg: #FBEAE8;
+}
+
+@page {
+  size: A4;
+  margin: 16mm 14mm 19mm 14mm;
+  @top-left {
+    content: "Протокол · " string(docid);
+    font-family: 'Golos Text'; font-size: 6.8pt; font-weight: 600;
+    letter-spacing: 1pt; text-transform: uppercase;
+    color: #94A0B4; vertical-align: bottom; padding-bottom: 2.5mm;
+  }
+  @bottom-left {
+    content: string(docsrc);
+    font-family: 'IBM Plex Mono'; font-size: 6.3pt; color: #94A0B4;
+  }
+  @bottom-right {
+    content: counter(page) " / " counter(pages);
+    font-family: 'IBM Plex Mono'; font-size: 6.3pt; color: #94A0B4;
+  }
+}
+@page :first { @top-left { content: none; } }
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Golos Text', 'DejaVu Sans', sans-serif;
+  font-size: 9.5pt; line-height: 1.5; color: var(--ink);
+  hyphens: auto;
+}
+.mono { font-family: 'IBM Plex Mono', monospace; }
+
+/* ---------- Обложечная плашка ---------- */
+
+.hero {
+  margin: -16mm -14mm 0;
+  padding: 16mm 14mm 12mm;
+  background: linear-gradient(135deg, #0F1F40 0%, #1B3568 100%);
+  border-bottom: 2.5pt solid var(--accent);
+  color: #fff;
+}
+.hero-kick {
+  display: flex; justify-content: space-between; align-items: baseline;
+}
+.hero-kick .lbl {
+  font-size: 7.5pt; font-weight: 600; letter-spacing: 2pt;
+  text-transform: uppercase; color: rgba(255,255,255,0.65);
+}
+.hero-kick .doc-id {
+  font-family: 'IBM Plex Mono'; font-size: 8pt;
+  color: rgba(255,255,255,0.6);
+  string-set: docid content();
+}
+.hero .bar {
+  width: 26pt; height: 3pt; background: #6FA0FF; border-radius: 2pt;
+  margin: 12pt 0 8pt;
+}
+.hero h1 {
+  font-size: 22pt; font-weight: 700; line-height: 1.18;
+  letter-spacing: -0.2pt; color: #fff;
+}
+.hero .meta {
+  margin-top: 8pt; font-size: 9.3pt; color: rgba(255,255,255,0.78);
+}
+.hero .meta b { color: #fff; font-weight: 600; }
+.hero .people {
+  margin-top: 9pt; display: flex; flex-wrap: wrap; gap: 4pt;
+}
+.hero .chip {
+  font-size: 8pt; font-weight: 500; color: #fff;
+  background: rgba(255,255,255,0.13);
+  border: 0.5pt solid rgba(255,255,255,0.22);
+  border-radius: 999px; padding: 1.5pt 8pt;
+}
+.doc-src-hidden { string-set: docsrc content(); }
+
+/* ---------- Главное + метрики ---------- */
+
+.tldr {
+  margin-top: 13pt; background: var(--tint);
+  border-radius: 10pt; padding: 11pt 13pt 9pt;
+}
+.tldr .lbl {
+  font-size: 7.5pt; font-weight: 700; letter-spacing: 1.6pt;
+  text-transform: uppercase; color: var(--accent);
+}
+.tldr ul { list-style: none; margin-top: 4pt; }
+.tldr li {
+  position: relative; padding: 4.5pt 0 4.5pt 13pt;
+  border-top: 0.5pt solid #E1E8F2; line-height: 1.45;
+}
+.tldr li:first-child { border-top: none; }
+.tldr li::before {
+  content: ""; position: absolute; left: 0; top: 10pt;
+  width: 5pt; height: 5pt; background: var(--accent); border-radius: 1.5pt;
+}
+
+.kpis { display: flex; gap: 8pt; margin-top: 11pt; }
+.kpi {
+  flex: 1; background: var(--tint2); border: 0.6pt solid var(--line);
+  border-radius: 10pt; padding: 8pt 11pt 7pt;
+}
+.kpi .num { font-size: 16pt; font-weight: 700; color: var(--navy); line-height: 1.15; }
+.kpi .cap {
+  font-size: 6.8pt; font-weight: 600; letter-spacing: 1.2pt;
+  text-transform: uppercase; color: var(--muted);
+}
+
+/* ---------- Секции ---------- */
+
+section.block { margin-top: 18pt; }
+h2 {
+  display: flex; align-items: center; gap: 7pt;
+  margin-bottom: 8pt; break-after: avoid;
+}
+h2 .bar { width: 4pt; height: 12pt; background: var(--accent); border-radius: 2pt; }
+h2 .t {
+  font-size: 11pt; font-weight: 700; letter-spacing: 1pt;
+  text-transform: uppercase; color: var(--navy);
+}
+h2 .fill { flex: 1; border-top: 0.6pt solid var(--line); }
+h2 .pill {
+  font-family: 'IBM Plex Mono'; font-size: 8pt; font-weight: 500;
+  color: var(--accent); background: var(--acc-soft);
+  border-radius: 999px; padding: 1pt 8pt;
+}
+
+/* Реестр: решения, вопросы, риски */
+
+.reg-row {
+  padding: 5pt 0; border-top: 0.5pt solid var(--hair);
+  break-inside: avoid; page-break-inside: avoid;
+}
+div.reg-row:first-of-type { border-top: none; }
+.reg-item { display: flex; align-items: baseline; }
+.reg-id { flex: 0 0 15mm; }
+.reg-id .tag {
+  display: inline-block; font-family: 'IBM Plex Mono';
+  font-size: 7.3pt; font-weight: 600; color: var(--accent);
+  background: var(--acc-soft); border-radius: 5pt; padding: 1pt 6pt;
+}
+.reg-id .tag.risk { color: var(--risk); background: var(--risk-bg); }
+.reg-body { flex: 1; }
+.reg-text { font-size: 9.5pt; line-height: 1.45; }
+.reg-note { font-size: 8.3pt; color: var(--muted); margin-top: 1.5pt; line-height: 1.4; }
+.reg-ref {
+  flex: 0 0 24mm; text-align: right; align-self: flex-start;
+  font-family: 'IBM Plex Mono'; font-size: 6.3pt; color: var(--faint);
+  padding-top: 2pt;
+}
+
+/* Таблица задач */
+
+table.tasks {
+  width: 100%; border-collapse: collapse;
+  border: 0.6pt solid var(--line);
+}
+.tasks th {
+  text-align: left; font-size: 7pt; font-weight: 600;
+  letter-spacing: 1.2pt; text-transform: uppercase;
+  color: #fff; background: var(--navy);
+  padding: 5pt 8pt;
+}
+.tasks td {
+  padding: 5pt 8pt; vertical-align: top;
+  font-size: 9.2pt; line-height: 1.4;
+  border-top: 0.5pt solid var(--hair);
+}
+.tasks tbody tr:nth-child(even) td { background: var(--tint2); }
+.tasks tr { break-inside: avoid; page-break-inside: avoid; }
+.tasks .c-id { width: 13mm; padding-top: 5.5pt; }
+.tasks .c-id .tag {
+  display: inline-block; font-family: 'IBM Plex Mono';
+  font-size: 7.3pt; font-weight: 600; color: var(--accent);
+  background: var(--acc-soft); border-radius: 5pt; padding: 1pt 6pt;
+}
+.tasks .c-owner { width: 34mm; font-weight: 500; }
+.t-note { display: block; font-size: 8.3pt; font-weight: 400; color: var(--muted); margin-top: 1pt; }
+.badge-warn {
+  display: inline-block; font-size: 7.3pt; font-weight: 600;
+  background: var(--warn-bg); color: var(--warn-fg);
+  border-radius: 999px; padding: 1pt 7pt;
+}
+.footnote { font-size: 7.8pt; color: var(--faint); margin-top: 5pt; }
+
+/* Хроника: таймлайн с осью */
+
+.timeline { margin-left: 3pt; border-left: 1.4pt solid #DCE3EE; }
+.tl-row {
+  position: relative; padding: 5.5pt 0 5.5pt 14pt;
+  break-inside: avoid; page-break-inside: avoid;
+}
+.tl-row::before {
+  content: ""; position: absolute; left: -4.4pt; top: 9pt;
+  width: 5.5pt; height: 5.5pt; border-radius: 50%;
+  background: var(--accent); border: 1.6pt solid #fff;
+}
+.tl-time {
+  font-family: 'IBM Plex Mono'; font-size: 7.3pt; font-weight: 500;
+  color: var(--accent);
+}
+.tl-title { font-size: 9.8pt; font-weight: 600; margin-top: 0.5pt; }
+.tl-sum { font-size: 8.8pt; color: var(--muted); margin-top: 1pt; line-height: 1.45; }
+
+/* Приложение */
+
+.appendix {
+  margin-top: 16pt; background: var(--tint2);
+  border: 0.6pt solid var(--line); border-radius: 10pt;
+  padding: 9pt 12pt;
+  font-family: 'IBM Plex Mono'; font-size: 7pt; line-height: 1.75;
+  color: var(--muted);
+}
+.appendix b { color: var(--ink); font-weight: 500; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="hero-kick">
+    <span class="lbl">Протокол встречи</span>
+    <span class="doc-id">{{ meeting.doc_id }}</span>
+  </div>
+  <div class="bar"></div>
+  <h1>{{ meeting.title }}</h1>
+  <p class="meta"><b>{{ meeting.date_human }}</b>{% if meeting.time_human %} · {{ meeting.time_human }}{% endif %} · длительность {{ meeting.duration }}</p>
+  <div class="people">
+    {%- for p in participants %}<span class="chip">{{ p }}</span>{% endfor %}
+  </div>
+  <span class="doc-src-hidden" style="font-size:0; line-height:0;">{{ meeting.doc_id }} · {{ meeting.date_short }}</span>
+</div>
+
+<section class="tldr">
+  <div class="lbl">Главное</div>
+  <ul>
+    {% for t in tldr %}<li>{{ t }}</li>{% endfor %}
+  </ul>
+</section>
+
+<div class="kpis">
+  {% for k in kpis %}
+  <div class="kpi"><div class="num">{{ k.num }}</div><div class="cap">{{ k.cap }}</div></div>
+  {% endfor %}
+</div>
+
+<section class="block">
+  <h2><span class="bar"></span><span class="t">Решения</span><span class="fill"></span><span class="pill">{{ decisions|length }}</span></h2>
+  {% for d in decisions %}
+  <div class="reg-row"><div class="reg-item">
+    <div class="reg-id"><span class="tag">{{ d.id }}</span></div>
+    <div class="reg-body">
+      <p class="reg-text">{{ d.text }}</p>
+      {% if d.note %}<p class="reg-note">{{ d.note }}</p>{% endif %}
+    </div>
+    <div class="reg-ref">{{ d.ref }}</div>
+  </div></div>
+  {% endfor %}
+</section>
+
+<section class="block">
+  <h2><span class="bar"></span><span class="t">Задачи</span><span class="fill"></span><span class="pill">{{ tasks|length }}</span></h2>
+  <table class="tasks">
+    <thead><tr><th>ID</th><th>Задача</th><th>Ответственный</th></tr></thead>
+    <tbody>
+    {% for t in tasks %}
+    <tr>
+      <td class="c-id"><span class="tag">{{ t.id }}</span></td>
+      <td>{{ t.text }}{% if t.note %}<span class="t-note">{{ t.note }}</span>{% endif %}</td>
+      <td class="c-owner">{% if t.owner %}{{ t.owner }}{% else %}<span class="badge-warn">не назначен</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if tasks_footnote %}<p class="footnote">{{ tasks_footnote }}</p>{% endif %}
+</section>
+
+<section class="block">
+  <h2><span class="bar"></span><span class="t">Открытые вопросы</span><span class="fill"></span><span class="pill">{{ questions|length }}</span></h2>
+  {% for q in questions %}
+  <div class="reg-row"><div class="reg-item">
+    <div class="reg-id"><span class="tag">{{ q.id }}</span></div>
+    <div class="reg-body"><p class="reg-text">{{ q.text }}</p>
+      {% if q.note %}<p class="reg-note">{{ q.note }}</p>{% endif %}</div>
+    <div class="reg-ref">{{ q.ref }}</div>
+  </div></div>
+  {% endfor %}
+</section>
+
+<section class="block">
+  <h2><span class="bar"></span><span class="t">Риски</span><span class="fill"></span><span class="pill">{{ risks|length }}</span></h2>
+  {% for r in risks %}
+  <div class="reg-row"><div class="reg-item">
+    <div class="reg-id"><span class="tag risk">{{ r.id }}</span></div>
+    <div class="reg-body"><p class="reg-text">{{ r.text }}</p>
+      {% if r.note %}<p class="reg-note">{{ r.note }}</p>{% endif %}</div>
+    <div class="reg-ref">{{ r.ref }}</div>
+  </div></div>
+  {% endfor %}
+</section>
+
+<section class="block">
+  <h2><span class="bar"></span><span class="t">Хроника обсуждения</span><span class="fill"></span><span class="pill">{{ meeting.duration }}</span></h2>
+  <div class="timeline">
+  {% for s in timeline %}
+  <div class="tl-row">
+    <div class="tl-time">{{ s.range }}</div>
+    <p class="tl-title">{{ s.title }}</p>
+    <p class="tl-sum">{{ s.summary }}</p>
+  </div>
+  {% endfor %}
+  </div>
+</section>
+
+<div class="appendix">
+  <b>Источник:</b> {{ meeting.source }}<br>
+  <b>Полный транскрипт:</b> {{ meeting.transcript }} ({{ meeting.segments }} сегментов) · ссылки вида S0590 указывают на сегменты транскрипта<br>
+  <b>Покрытие сегментов:</b> {{ meeting.coverage }} (вынесено из PDF)<br>
+  <b>Сгенерировано:</b> {{ meeting.generator }}
+</div>
+
+</body>
+</html>

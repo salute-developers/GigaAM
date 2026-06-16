@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.slack-zoom.gigaam-tunnel</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/ssh</string>
+    <string>-N</string>
+    <string>-o</string>
+    <string>ExitOnForwardFailure=yes</string>
+    <string>-o</string>
+    <string>ServerAliveInterval=30</string>
+    <string>-o</string>
+    <string>ServerAliveCountMax=3</string>
+    <string>-R</string>
+    <string>127.0.0.1:18013:127.0.0.1:18003</string>
+    <string>root@193.233.87.211</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/ilyaqa/Library/Logs/slack_zoom/gigaam-tunnel.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/ilyaqa/Library/Logs/slack_zoom/gigaam-tunnel.err.log</string>
+</dict>
+</plist>
