@@ -228,6 +228,21 @@ table.tasks {
 .tl-title { font-size: 9.8pt; font-weight: 600; margin-top: 0.5pt; }
 .tl-sum { font-size: 8.8pt; color: var(--muted); margin-top: 1pt; line-height: 1.45; }
 
+.semantic-section {
+  padding: 6pt 0; border-top: 0.5pt solid var(--hair);
+  break-inside: avoid; page-break-inside: avoid;
+}
+.semantic-section:first-of-type { border-top: none; }
+.semantic-title { font-size: 10pt; font-weight: 700; color: var(--navy); }
+.semantic-purpose,
+.semantic-summary { font-size: 8.8pt; color: var(--muted); margin-top: 1.5pt; }
+.semantic-items { margin-top: 3pt; padding-left: 10pt; }
+.semantic-items li { margin-top: 2pt; }
+.semantic-items b { color: var(--ink); }
+.semantic-items .ref {
+  font-family: 'IBM Plex Mono'; font-size: 6.3pt; color: var(--faint);
+}
+
 /* Приложение */
 
 .appendix {
@@ -268,6 +283,26 @@ table.tasks {
   <div class="kpi"><div class="num">{{ k.num }}</div><div class="cap">{{ k.cap }}</div></div>
   {% endfor %}
 </div>
+
+{% if sections %}
+<section class="block">
+  <h2><span class="bar"></span><span class="t">Смысловые разделы</span><span class="fill"></span><span class="pill">{{ sections|length }}</span></h2>
+  {% for section in sections %}
+  <div class="semantic-section">
+    <p class="semantic-title">{{ section.title }}</p>
+    {% if section.purpose %}<p class="semantic-purpose">{{ section.purpose }}</p>{% endif %}
+    {% if section.summary %}<p class="semantic-summary">{{ section.summary }}</p>{% endif %}
+    {% if section["items"] %}
+    <ul class="semantic-items">
+      {% for item in section["items"] %}
+      <li><b>{{ item.title }}</b> {{ item.text }}{% if item.ref %} <span class="ref">{{ item.ref }}</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
 
 <section class="block">
   <h2><span class="bar"></span><span class="t">Решения</span><span class="fill"></span><span class="pill">{{ decisions|length }}</span></h2>

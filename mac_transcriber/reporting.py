@@ -1112,6 +1112,7 @@ def render_report_markdown(report: MeetingReport) -> str:
     lines.extend(["## KPI", ""])
     lines.extend(f"- **{item['num']}** {item['cap']}" for item in data["kpis"])
     lines.append("")
+    _append_protocol_sections_markdown(lines, data.get("sections", []))
     _append_protocol_items_markdown(lines, "Решения", data["decisions"])
     _append_protocol_items_markdown(lines, "Задачи", data["tasks"], include_owner=True)
     if data.get("tasks_footnote"):
@@ -1156,6 +1157,7 @@ def build_protocol_data(report: MeetingReport) -> dict[str, Any]:
         },
         "participants": participants,
         "tldr": _protocol_tldr(report),
+        "sections": _protocol_adaptive_sections(report),
         "decisions": decisions,
         "tasks": tasks,
         "tasks_footnote": "Сроки, не прозвучавшие в записи, не заполняются. Задачи без ответственного требуют назначения.",
@@ -1171,6 +1173,30 @@ def build_protocol_data(report: MeetingReport) -> dict[str, Any]:
         {"num": len(risks), "cap": "Рисков"},
     ]
     return data
+
+
+def _protocol_adaptive_sections(report: MeetingReport) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+    for section in report.adaptive_sections:
+        items = [
+            {
+                "title": item.title,
+                "text": _shorten(item.text, limit=520),
+                "ref": _citation_text(report, item.citations),
+            }
+            for item in section.items
+        ]
+        if not items and not section.summary:
+            continue
+        sections.append(
+            {
+                "title": section.title,
+                "purpose": section.purpose,
+                "summary": _shorten(section.summary, limit=700),
+                "items": items,
+            }
+        )
+    return sections
 
 
 def build_coverage_payload(report: MeetingReport) -> dict[str, Any]:
@@ -1393,6 +1419,46 @@ def _append_protocol_items_markdown(
         note = f" _{item['note']}_" if item.get("note") else ""
         lines.append(f"- **{item['id']}** {item['text']}{owner} `{item['ref']}`{note}")
     lines.append("")
+
+
+def _append_protocol_sections_markdown(lines: list[str], sections: list[dict[str, Any]]) -> None:
+    if not sections:
+        return
+    lines.extend(["## Смысловые разделы", ""])
+    for section in sections:
+        lines.extend([f"### {section['title']}", ""])
+        if section.get("purpose"):
+            lines.extend([str(section["purpose"]), ""])
+        if section.get("summary"):
+            lines.extend([str(section["summary"]), ""])
+        items = section.get("items") or []
+        if items:
+            for item in items:
+                ref = f" `{item['ref']}`" if item.get("ref") else ""
+                lines.append(f"- **{item['title']}** {item['text']}{ref}")
+    lines.append("")
+
+
+def _append_protocol_sections_markdown(lines: list[str], sections: list[dict[str, Any]]) -> None:
+    for section in sections:
+        title = str(section.get("title") or "Раздел").strip()
+        lines.extend([f"## {title}", ""])
+        purpose = str(section.get("purpose") or "").strip()
+        if purpose:
+            lines.extend([f"_{purpose}_", ""])
+        summary = str(section.get("summary") or "").strip()
+        if summary:
+            lines.extend([summary, ""])
+        items = [item for item in section.get("items", []) if isinstance(item, dict)]
+        for item in items:
+            item_title = str(item.get("title") or "").strip()
+            text = str(item.get("text") or "").strip()
+            ref = str(item.get("ref") or "").strip()
+            prefix = f"**{item_title}:** " if item_title else ""
+            suffix = f" `{ref}`" if ref else ""
+            lines.append(f"- {prefix}{text}{suffix}")
+        if items:
+            lines.append("")
 
 
 def _protocol_report_items(prefix: str, items: list[ReportItem], report: MeetingReport) -> list[dict[str, Any]]:
