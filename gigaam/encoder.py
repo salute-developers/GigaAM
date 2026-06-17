@@ -74,24 +74,59 @@ class StridingSubsampling(nn.Module):
             self.out = torch.nn.Linear(conv_channels * int(out_length), feat_out)
         self.conv = torch.nn.Sequential(*layers)
 
-    def calc_output_length(self, lengths: Tensor) -> Tensor:
+    def calc_output_length(
+        self, lengths: Tensor, num_stages: Optional[int] = None
+    ) -> Tensor:
         """
-        Calculates the output length after applying the subsampling.
+        Valid length after applying ``num_stages`` strided subsampling conv
+        stages (defaults to all of them, i.e. the full subsampling output).
         """
-        lengths = lengths.to(torch.float)
+        if num_stages is None:
+            num_stages = self._sampling_num
         add_pad = 2 * self._padding - self._kernel_size
-        for _ in range(self._sampling_num):
-            lengths = torch.div(lengths + add_pad, self._stride) + 1.0
-            lengths = torch.floor(lengths)
+        lengths = lengths.to(torch.float)
+        for _ in range(num_stages):
+            lengths = torch.floor((lengths + add_pad) / self._stride + 1.0)
         return lengths.to(dtype=torch.int)
+
+    def _mask_time(self, x: Tensor, lengths: Tensor) -> Tensor:
+        """
+        Zero out the padded tail along the time axis (dim 2). The subsampling
+        convolutions are strided and have a receptive field wider than the
+        stride, so the padded frames of shorter samples leak into the last
+        valid frames. Left unmasked, the padding is the log-mel floor
+        (``log(1e-9) ~= -20.7``) of zero-padded audio, not zero, so a batched
+        short sample sees a different boundary than the same sample run alone
+        (where conv zero-padding applies instead). Re-zeroing after every conv
+        stage keeps the valid frames of batched inference aligned with the
+        batch-size-1 result.
+        """
+        time = torch.arange(x.size(2), device=x.device)
+        pad = time[None, :] >= lengths[:, None]  # [b, t]
+        pad = pad[:, None]  # add channel dim -> [b, 1, t]
+        if x.dim() == 4:
+            pad = pad[..., None]  # add feature dim for conv2d -> [b, 1, t, 1]
+        return x.masked_fill(pad, 0.0)
 
     def forward(self, x: Tensor, lengths: Tensor) -> Tuple[Tensor, Tensor]:
         if self.subsampling_type == "conv2d":
-            x = self.conv(x.unsqueeze(1))
+            x = x.unsqueeze(1)
+        else:
+            x = x.transpose(1, 2)
+
+        cur_len = lengths
+        x = self._mask_time(x, cur_len)
+        for module in self.conv:
+            x = module(x)
+            if isinstance(module, (torch.nn.Conv1d, torch.nn.Conv2d)):
+                cur_len = self.calc_output_length(cur_len, 1)
+                x = self._mask_time(x, cur_len)
+
+        if self.subsampling_type == "conv2d":
             b, _, t, _ = x.size()
             x = self.out(x.transpose(1, 2).reshape(b, t, -1))
         else:
-            x = self.conv(x.transpose(1, 2)).transpose(1, 2)
+            x = x.transpose(1, 2)
         return x, self.calc_output_length(lengths)
 
 
