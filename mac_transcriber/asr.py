@@ -559,9 +559,14 @@ def build_segments(
 
 
 def vad_backend() -> str:
-    """Выбирает детектор речи для build_segments: ``rms`` (дефолт) или ``silero``."""
-    value = os.environ.get("MAC_TRANSCRIBER_VAD", "rms").strip().lower()
-    return "silero" if value == "silero" else "rms"
+    """Выбирает детектор речи для build_segments: ``silero`` (дефолт) или ``rms``.
+
+    silero выбран дефолтом после A/B: чище границы фраз, меньше дробления, не плодит
+    перекрёстных «призраков» на мультидорожке. ``MAC_TRANSCRIBER_VAD=rms`` — откат на
+    энергетический детектор.
+    """
+    value = os.environ.get("MAC_TRANSCRIBER_VAD", "silero").strip().lower()
+    return "rms" if value == "rms" else "silero"
 
 
 def detect_speech_intervals(

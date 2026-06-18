@@ -5,19 +5,19 @@ import torch
 from mac_transcriber import asr
 
 
-def test_vad_backend_defaults_to_rms(monkeypatch):
+def test_vad_backend_defaults_to_silero(monkeypatch):
     monkeypatch.delenv("MAC_TRANSCRIBER_VAD", raising=False)
-    assert asr.vad_backend() == "rms"
-
-
-def test_vad_backend_reads_silero_case_insensitive(monkeypatch):
-    monkeypatch.setenv("MAC_TRANSCRIBER_VAD", "SILERO")
     assert asr.vad_backend() == "silero"
 
 
-def test_vad_backend_unknown_value_falls_back_to_rms(monkeypatch):
-    monkeypatch.setenv("MAC_TRANSCRIBER_VAD", "whisper")
+def test_vad_backend_rms_opt_out_case_insensitive(monkeypatch):
+    monkeypatch.setenv("MAC_TRANSCRIBER_VAD", "RMS")
     assert asr.vad_backend() == "rms"
+
+
+def test_vad_backend_unknown_value_falls_back_to_silero(monkeypatch):
+    monkeypatch.setenv("MAC_TRANSCRIBER_VAD", "whisper")
+    assert asr.vad_backend() == "silero"
 
 
 def test_detect_speech_intervals_silero_uses_loaded_model(monkeypatch):

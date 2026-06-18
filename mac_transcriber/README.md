@@ -68,20 +68,24 @@ CPU; override with `MAC_TRANSCRIBER_DIARIZATION_DEVICE` if needed.
 diarization fallback) into speech chunks before GigaAM. Two detectors are available via
 `MAC_TRANSCRIBER_VAD`:
 
-- `rms` (default): energy-threshold detector, no extra dependency.
-- `silero`: `silero-vad` neural detector. On meeting audio it fragments less, keeps
-  speech boundaries inside sentences intact, and captures slightly more speech at
-  comparable speed. Requires the `silero-vad` package (in `requirements.txt`).
+- `silero` (default): `silero-vad` neural detector (in `requirements.txt`). On meeting
+  audio it fragments less, keeps speech boundaries inside sentences intact, and captures
+  slightly more speech at comparable speed. Validated across the existing multi-track
+  meetings: cross-track speech overlap is the same or lower than `rms` on all but one
+  meeting (no systematic ghost/duplicate turns on other speakers' mics). Use `rms` to
+  roll back if a specific recording shows cross-track bleed.
+- `rms`: legacy energy-threshold detector, no extra dependency. Opt-out fallback.
 
 ```env
-MAC_TRANSCRIBER_VAD=silero
+# Default is silero; set this only to roll back to the energy detector.
+MAC_TRANSCRIBER_VAD=rms
 ```
 
 This only changes *where* each track is cut; segment timestamps stay absolute (sample
 position in the source), so chronological order across tracks is unaffected. Speaker
 labels are unchanged: in multi-track mode the speaker is the track, not the VAD. The
-pyannote diarization path is not affected. If `MAC_TRANSCRIBER_VAD=silero` but the
-package is missing, the service logs a warning and falls back to `rms`.
+pyannote diarization path is not affected. If the `silero-vad` package is missing, the
+service logs a warning and falls back to `rms`.
 
 A/B comparison of the two detectors on existing meetings:
 
