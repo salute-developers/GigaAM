@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from mac_transcriber.archive import write_meeting_manifest
 from mac_transcriber.asr import resolve_meeting_title, transcribe_meeting
 from mac_transcriber.memory_db import sync_meeting_memory
-from mac_transcriber.reporting import ReportQuotaError
+from mac_transcriber.reporting import ReportQuotaError, ReportUnavailableError
 
 
 def _load_local_env_file(path: Path) -> None:
@@ -245,6 +245,19 @@ def _process_meeting(meeting_id: str) -> None:
                 phase="blocked_on_quota",
                 progress=0.9,
                 message=f"Paused: AI quota exhausted. Top up, then reprocess. ({exc})"[
+                    :300
+                ],
+            )
+        except ReportUnavailableError as exc:
+            # AI-провайдер недоступен (сеть/таймаут/5xx/нет ключа): НЕ пишем local-мусор
+            # и НЕ failed. Транскрипт сохранён; ставим в очередь до восстановления API,
+            # затем дообработаем через reprocess_blocked.py.
+            _write_status(
+                meeting_dir,
+                "blocked_on_ai",
+                phase="blocked_on_ai",
+                progress=0.9,
+                message=f"Queued: AI unavailable, will retry when API is back. ({exc})"[
                     :300
                 ],
             )

@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from mac_transcriber.archive import sha256_file, write_meeting_manifest
 from mac_transcriber import service
-from mac_transcriber.reporting import ReportQuotaError
+from mac_transcriber.reporting import ReportQuotaError, ReportUnavailableError
 
 
 def test_process_meeting_blocks_on_quota_without_writing_report(tmp_path, monkeypatch):
@@ -22,6 +22,24 @@ def test_process_meeting_blocks_on_quota_without_writing_report(tmp_path, monkey
     status = json.loads((meeting_dir / "status.json").read_text(encoding="utf-8"))
     # Нет денег -> пауза, а не failed и не completed; сырой отчёт не пишется.
     assert status["status"] == "blocked_on_quota"
+    assert not (meeting_dir / "artifacts" / "report.md").exists()
+
+
+def test_process_meeting_queues_when_ai_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(service, "ROOT", tmp_path)
+
+    def raise_unavailable(**_kwargs):
+        raise ReportUnavailableError("OpenAI API unavailable: Connection error.")
+
+    monkeypatch.setattr(service, "transcribe_meeting", raise_unavailable)
+
+    meeting_dir = tmp_path / "meetings" / "m2"
+    meeting_dir.mkdir(parents=True)
+    service._process_meeting("m2")
+
+    status = json.loads((meeting_dir / "status.json").read_text(encoding="utf-8"))
+    # API недоступен -> очередь, а не failed/completed; сырой local-отчёт не пишется.
+    assert status["status"] == "blocked_on_ai"
     assert not (meeting_dir / "artifacts" / "report.md").exists()
 
 

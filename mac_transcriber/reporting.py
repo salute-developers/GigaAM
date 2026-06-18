@@ -220,6 +220,15 @@ class ReportQuotaError(ReportGenerationError):
     """
 
 
+class ReportUnavailableError(ReportGenerationError):
+    """AI-провайдер недоступен (сеть/таймаут/5xx/rate-limit/нет ключа).
+
+    Как и ReportQuotaError, НЕ должен приводить к local-фоллбэку: пролетает до сервиса,
+    который паркует встречу (blocked_on_ai) до восстановления API, вместо выдачи сырого
+    local-«бреда». Дренится reprocess_blocked.py, когда API снова доступен.
+    """
+
+
 def _is_quota_error(message: str) -> bool:
     lowered = message.lower()
     return (
@@ -376,9 +385,9 @@ def build_report(
             api_key=api_key,
             context_pack=context_pack,
         )
-    except ReportQuotaError:
-        # Нет денег — НЕ отдаём сырой local-«бред»: пробрасываем выше, чтобы сервис
-        # поставил встречу на паузу до пополнения.
+    except (ReportQuotaError, ReportUnavailableError):
+        # Нет денег / API недоступен — НЕ отдаём сырой local-«бред»: пробрасываем выше,
+        # чтобы сервис поставил встречу в очередь (blocked_*) до восстановления.
         raise
     except ReportGenerationError as exc:
         local_report.warnings.append(f"AI report fallback: {exc}")
@@ -407,7 +416,9 @@ def build_ai_report(
     key = api_key or load_openai_api_key()
     if not key:
         if not (allow_openrouter_fallback and load_openrouter_api_key()):
-            raise ReportGenerationError("OPENAI_API_KEY is not configured")
+            # Ключа нет вовсе — это недоступность AI: паркуем встречу до настройки
+            # ключа, а не пишем local-мусор.
+            raise ReportUnavailableError("OPENAI_API_KEY is not configured")
         key = ""
 
     if context_pack:
@@ -456,6 +467,10 @@ def build_ai_report(
                 allow_openrouter_fallback=allow_openrouter_fallback,
                 allow_baseline_upgrade=allow_baseline_upgrade,
             )
+        except (ReportQuotaError, ReportUnavailableError):
+            # Нет денег / API недоступен — не ретраим и не уходим в chunked (это не
+            # починит доступность): пробрасываем, чтобы сервис поставил в очередь.
+            raise
         except ReportGenerationError as exc:
             last_direct_error = exc
             if attempt < AI_REQUEST_ATTEMPTS and _should_retry_direct_ai(exc):
@@ -782,7 +797,7 @@ def build_chunked_ai_report(
                     f"AI chunk {index} did not contain output text"
                 )
             chunk_payload = _loads_ai_json(content, context=f"AI chunk {index}")
-        except ReportQuotaError:
+        except (ReportQuotaError, ReportUnavailableError):
             # Нет денег — не пропускаем как «сбойный чанк», а пробрасываем выше.
             raise
         except ReportGenerationError:
@@ -833,7 +848,7 @@ def build_chunked_ai_report(
             context_pack=context_pack,
             allow_openrouter_fallback=allow_openrouter_fallback,
         )
-    except ReportQuotaError:
+    except (ReportQuotaError, ReportUnavailableError):
         # Нет денег на синтезе — не собираем «как есть» из заметок, пробрасываем выше.
         raise
     except ReportGenerationError as exc:
@@ -907,7 +922,7 @@ def _build_chunked_synthesis_payload(
                     allow_openrouter_fallback=allow_openrouter_fallback,
                 )
             )
-        except ReportQuotaError:
+        except (ReportQuotaError, ReportUnavailableError):
             # Нет денег — пробрасываем, а не сшиваем частично.
             raise
         except ReportGenerationError:
@@ -1223,7 +1238,7 @@ def _apply_report_critic(
         ops_payload = _loads_ai_json(content, context="AI critic")
         critiqued = _apply_critic_ops(report, ops_payload)
         validate_report_citations(critiqued)
-    except ReportQuotaError:
+    except (ReportQuotaError, ReportUnavailableError):
         # Критик — финальная полировка уже готового отчёта; нет денег на него не повод
         # ронять/ставить на паузу хороший отчёт. Помечаем и отдаём доcritic-версию.
         report.warnings.append("AI critic skipped: provider quota exhausted")
@@ -4568,6 +4583,10 @@ def _raise_for_provider_status(exc: Exception, *, provider: str) -> None:
     message = f"{provider} API returned HTTP {status}: {body}"
     if status in (402, 429) and _is_quota_error(body):
         raise ReportQuotaError(message) from exc
+    # 429 без quota-маркеров = rate limit; 5xx = сбой провайдера — это недоступность,
+    # а не контентная ошибка: паркуем и ждём восстановления, не пишем local-мусор.
+    if status == 429 or (isinstance(status, int) and 500 <= status < 600):
+        raise ReportUnavailableError(message) from exc
     raise ReportGenerationError(message) from exc
 
 
@@ -4592,7 +4611,9 @@ def _post_openai_response(*, payload: dict[str, Any], api_key: str) -> dict[str,
     except openai.APIStatusError as exc:
         _raise_for_provider_status(exc, provider="OpenAI")
     except openai.OpenAIError as exc:
-        raise ReportGenerationError(f"OpenAI API request failed: {exc}") from exc
+        # APIStatusError уже обработан выше; сюда падают connection/timeout/протокол —
+        # это недоступность провайдера, паркуем (не local-фоллбэк).
+        raise ReportUnavailableError(f"OpenAI API unavailable: {exc}") from exc
     return {"output_text": final.output_text or ""}
 
 
@@ -4677,9 +4698,7 @@ def _post_openrouter_response(
                 continue
             _raise_for_provider_status(exc, provider="OpenRouter")
         except openai.OpenAIError as exc:
-            raise ReportGenerationError(
-                f"OpenRouter API request failed: {exc}"
-            ) from exc
+            raise ReportUnavailableError(f"OpenRouter API unavailable: {exc}") from exc
         if not content:
             raise ReportGenerationError(
                 "OpenRouter response did not contain message content"
@@ -5572,16 +5591,19 @@ def _chunk_timeline(
 def _provider_error(
     message: str, *causes: BaseException | None
 ) -> ReportGenerationError:
-    """Сохраняет тип quota-ошибки: если хоть одна причина — нет денег, отдаём
-    ReportQuotaError (чтобы сервис поставил встречу на паузу, а не в local-дамп)."""
+    """Сохраняет тип park-ошибок: если причина — нет денег или недоступность API,
+    отдаём тот же подкласс (чтобы сервис поставил встречу в очередь, а не в local-дамп)."""
     if any(isinstance(cause, ReportQuotaError) for cause in causes):
         return ReportQuotaError(message)
+    if any(isinstance(cause, ReportUnavailableError) for cause in causes):
+        return ReportUnavailableError(message)
     return ReportGenerationError(message)
 
 
 def _should_retry_chunked(exc: ReportGenerationError) -> bool:
-    # «Нет денег» (quota) не ретраим и не пропускаем — она должна всплыть до сервиса.
-    if isinstance(exc, ReportQuotaError):
+    # Park-ошибки (нет денег / API недоступен) не ретраим и не пропускаем — они должны
+    # всплыть до сервиса, чтобы встреча встала в очередь, а не в local-дамп.
+    if isinstance(exc, (ReportQuotaError, ReportUnavailableError)):
         return False
     message = str(exc).lower()
     return (

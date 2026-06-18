@@ -1735,6 +1735,28 @@ def test_write_report_artifacts_marks_ai_fallback_as_degraded(tmp_path, monkeypa
     assert any("AI report fallback" in warning for warning in health["warnings"])
 
 
+def test_build_report_propagates_unavailable_instead_of_local_fallback(monkeypatch):
+    # Недоступность AI НЕ должна давать local-фоллбэк: ошибка пролетает наверх,
+    # чтобы сервис поставил встречу в очередь, а не записал сырой local-отчёт.
+    def fake_openai_response(*, payload, api_key):
+        raise reporting.ReportUnavailableError("OpenAI API unavailable: timeout")
+
+    monkeypatch.setattr(
+        "mac_transcriber.reporting._post_openai_response", fake_openai_response
+    )
+
+    with pytest.raises(reporting.ReportUnavailableError):
+        build_report(
+            meeting_id="m1",
+            title="Planning",
+            source_filename="planning.m4a",
+            model_name="v3_e2e_rnnt",
+            segments=[_segment("Илья", 0.0, 12.0, "Договорились сделать отчёты.")],
+            use_ai=True,
+            api_key="sk-test",
+        )
+
+
 def test_report_health_alerts_include_report_warning_details(tmp_path):
     report = build_local_report(
         meeting_id="long-call",
@@ -2599,7 +2621,8 @@ def test_post_openrouter_response_wraps_transport_error(monkeypatch):
     err = _openai.APIConnectionError(request=_httpx.Request("POST", "https://api.test"))
     _fake_openai_client(monkeypatch, chat_completions=_FakeChatCompletions([err]))
 
-    with pytest.raises(reporting.ReportGenerationError, match="request failed"):
+    # Сетевая ошибка = недоступность провайдера -> парковка, не local-фоллбэк.
+    with pytest.raises(reporting.ReportUnavailableError, match="unavailable"):
         reporting._post_openrouter_response(
             payload=_openrouter_payload(), api_key="k", model="vendor/model"
         )
@@ -2640,7 +2663,8 @@ def test_post_openai_response_wraps_network_error(monkeypatch):
     err = _openai.APIConnectionError(request=_httpx.Request("POST", "https://api.test"))
     _fake_openai_client(monkeypatch, responses=_FakeResponsesAPI(error=err))
 
-    with pytest.raises(reporting.ReportGenerationError, match="request failed"):
+    # Сетевая ошибка = недоступность провайдера -> парковка, не local-фоллбэк.
+    with pytest.raises(reporting.ReportUnavailableError, match="unavailable"):
         reporting._post_openai_response(payload={"model": "gpt-5.5"}, api_key="k")
 
 

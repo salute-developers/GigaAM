@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Дообработка встреч, поставленных на паузу из-за исчерпанной AI-квоты.
+"""Дообработка встреч, поставленных в очередь из-за недоступности AI.
 
-Сценарий: AI-провайдер вернул 429 "нет денег" -> сервис пометил встречу
-`blocked_on_quota` и НЕ выдал сырой local-отчёт. После пополнения баланса
-запусти этот скрипт: он берёт такие встречи ПО ОЧЕРЕДИ (старые первыми),
-переобрабатывает их и ОСТАНАВЛИВАЕТСЯ на первой же встрече, которая снова
-упёрлась в квоту (значит, денег опять не хватает — дальше не идём).
+Сценарии: AI-провайдер вернул "нет денег" -> `blocked_on_quota`; либо API был
+недоступен (сеть/таймаут/5xx/нет ключа) -> `blocked_on_ai`. В обоих случаях сервис
+сохранил транскрипт и НЕ выдал сырой local-отчёт. Когда AI снова доступен (пополнил
+баланс / поднялся API), запусти этот скрипт: он берёт такие встречи ПО ОЧЕРЕДИ (старые
+первыми), переобрабатывает их и ОСТАНАВЛИВАЕТСЯ на первой же, которая снова упёрлась в
+недоступность (значит, AI ещё не готов — дальше не идём).
+
+Можно повесить на расписание (cron/launchd) для автоматического дренажа очереди.
 
 Использование:
     .venv/bin/python mac_transcriber/scripts/reprocess_blocked.py [--env-file .env.local] [--limit N] [--dry-run]
@@ -23,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-BLOCKED = "blocked_on_quota"
+BLOCKED = ("blocked_on_quota", "blocked_on_ai")
 
 
 def _load_env_files(paths: list[Path]) -> None:
@@ -53,7 +56,7 @@ def _blocked_meetings(meetings_root: Path) -> list[Path]:
     found: list[tuple[str, Path]] = []
     for status_path in meetings_root.glob("*/status.json"):
         status = _read_status(status_path.parent)
-        if status.get("status") == BLOCKED:
+        if status.get("status") in BLOCKED:
             # Сортируем по created_at (старые первыми), чтобы очередь была честной.
             found.append((str(status.get("created_at") or ""), status_path.parent))
     found.sort(key=lambda item: item[0])
@@ -78,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     # service читает env на импорте — грузим env ДО импорта.
     from mac_transcriber import service
     from mac_transcriber.asr import regenerate_report_from_transcript
-    from mac_transcriber.reporting import ReportQuotaError
+    from mac_transcriber.reporting import ReportQuotaError, ReportUnavailableError
 
     meetings_root = service.ROOT / "meetings"
     blocked = _blocked_meetings(meetings_root)
@@ -86,10 +89,10 @@ def main(argv: list[str] | None = None) -> int:
         blocked = blocked[: args.limit]
 
     if not blocked:
-        print("No meetings are blocked_on_quota. Nothing to do.")
+        print("No meetings are queued (blocked_on_quota/blocked_on_ai). Nothing to do.")
         return 0
 
-    print(f"{len(blocked)} meeting(s) blocked_on_quota (oldest first):")
+    print(f"{len(blocked)} meeting(s) queued for AI (oldest first):")
     for meeting_dir in blocked:
         print(f"  - {meeting_dir.name}")
     if args.dry_run:
@@ -102,11 +105,16 @@ def main(argv: list[str] | None = None) -> int:
         try:
             # Только отчёт из готового транскрипта — ASR не перезапускаем.
             artifacts = regenerate_report_from_transcript(meeting_dir)
-        except ReportQuotaError:
+        except (ReportQuotaError, ReportUnavailableError) as exc:
             remaining = len(blocked) - done
+            reason = (
+                "STILL out of quota"
+                if isinstance(exc, ReportQuotaError)
+                else "AI STILL unavailable"
+            )
             print(
-                f"   STILL out of quota. Stopping. {remaining} meeting(s) left paused; "
-                "top up more and re-run.",
+                f"   {reason}. Stopping. {remaining} meeting(s) left queued; "
+                "retry when AI is back.",
                 flush=True,
             )
             return 2
