@@ -36,10 +36,12 @@ plistbuddy_bin="${MAC_TRANSCRIBER_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
 labels=(
   "com.slack-zoom.gigaam-transcriber"
   "com.slack-zoom.gigaam-tunnel"
+  "com.slack-zoom.gigaam-reprocess"
 )
 plists=(
   "com.slack-zoom.gigaam-transcriber.plist"
   "com.slack-zoom.gigaam-tunnel.plist"
+  "com.slack-zoom.gigaam-reprocess.plist"
 )
 
 if [[ -f "$repo_root/.env.local" ]]; then
@@ -127,6 +129,23 @@ write_plist() {
       done
       "$plutil_bin" -replace StandardOutPath -string "$log_dir/gigaam-tunnel.out.log" "$target_path"
       "$plutil_bin" -replace StandardErrorPath -string "$log_dir/gigaam-tunnel.err.log" "$target_path"
+      ;;
+    "com.slack-zoom.gigaam-reprocess")
+      "$plutil_bin" -replace WorkingDirectory -string "$repo_root" "$target_path"
+      "$plistbuddy_bin" -c "Delete :ProgramArguments" "$target_path" >/dev/null 2>&1 || true
+      "$plistbuddy_bin" -c "Add :ProgramArguments array" "$target_path"
+      "$plistbuddy_bin" -c "Add :ProgramArguments:0 string $repo_root/.venv/bin/python" "$target_path"
+      "$plistbuddy_bin" -c "Add :ProgramArguments:1 string mac_transcriber/scripts/reprocess_blocked.py" "$target_path"
+      "$plistbuddy_bin" -c "Add :ProgramArguments:2 string --env-file" "$target_path"
+      "$plistbuddy_bin" -c "Add :ProgramArguments:3 string .env.local" "$target_path"
+      "$plutil_bin" -replace EnvironmentVariables.MAC_TRANSCRIBER_ROOT -string "$repo_root/.local/mac_transcriber" "$target_path"
+      "$plutil_bin" -replace EnvironmentVariables.MAC_TRANSCRIBER_REPORT_MODE -string "${MAC_TRANSCRIBER_REPORT_MODE:-ai}" "$target_path"
+      "$plutil_bin" -replace EnvironmentVariables.MAC_TRANSCRIBER_REPORT_MODEL -string "${MAC_TRANSCRIBER_REPORT_MODEL:-gpt-5.5}" "$target_path"
+      "$plutil_bin" -replace EnvironmentVariables.MAC_TRANSCRIBER_REPORT_PDF -string "${MAC_TRANSCRIBER_REPORT_PDF:-1}" "$target_path"
+      "$plutil_bin" -replace EnvironmentVariables.MPLCONFIGDIR -string "/tmp/slack-zoom-matplotlib" "$target_path"
+      "$plutil_bin" -replace EnvironmentVariables.PATH -string "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$target_path"
+      "$plutil_bin" -replace StandardOutPath -string "$log_dir/gigaam-reprocess.out.log" "$target_path"
+      "$plutil_bin" -replace StandardErrorPath -string "$log_dir/gigaam-reprocess.err.log" "$target_path"
       ;;
     *)
       echo "Unknown launchd label: $label" >&2

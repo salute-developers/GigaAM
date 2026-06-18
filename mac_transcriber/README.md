@@ -109,10 +109,14 @@ mac_transcriber/scripts/install_launchd.sh "$MAC_TRANSCRIBER_API_KEY"
 
 The installer copies the plist examples into `~/Library/LaunchAgents`, writes logs under
 `~/Library/Logs/slack_zoom`, replaces the placeholder API key in the generated plist, then
-bootstraps and kickstarts both agents:
+bootstraps and kickstarts the agents:
 
 - `com.slack-zoom.gigaam-transcriber`
 - `com.slack-zoom.gigaam-tunnel`
+- `com.slack-zoom.gigaam-reprocess` — periodic queue drainer (every 15 min via
+  `StartInterval`). Reprocesses meetings parked as `blocked_on_quota`/`blocked_on_ai`
+  (AI was unavailable) once the API is back. Carries no secrets — it reads them from
+  `.env.local` via `--env-file`. Drains the queue on its own; no manual step needed.
 
 Do not put real secrets in `mac_transcriber/launchd/*.example`, this README, or git. The
 generated plist in `~/Library/LaunchAgents` contains the local shared secret.
