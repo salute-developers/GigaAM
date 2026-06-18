@@ -1,5 +1,6 @@
 import difflib
 import json
+import logging
 import math
 import os
 import re
@@ -53,6 +54,10 @@ _MODEL_LOCK = Lock()
 _DIARIZATION_PIPELINE = None
 _DIARIZATION_MODEL_NAME = None
 _DIARIZATION_LOCK = Lock()
+_SILERO_MODEL = None
+_SILERO_LOCK = Lock()
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -88,6 +93,10 @@ class DiarizedTurn:
 
 
 class DiarizationUnavailable(RuntimeError):
+    pass
+
+
+class SileroUnavailable(RuntimeError):
     pass
 
 
@@ -528,26 +537,101 @@ def build_segments(
     tracks: list[TrackSpec],
     progress_callback: Callable[[int, int, int], None] | None = None,
 ) -> list[Segment]:
+    backend = vad_backend()
     segments: list[Segment] = []
     total = len(tracks)
     for index, track in enumerate(tracks, start=1):
         wav = gigaam.load_audio(str(track.path)).cpu()
-        mask, rms, _threshold = activity_mask(wav)
-        for start, end in mask_to_intervals(mask, wav.numel()):
-            for part_start, part_end in split_interval(start, end, rms):
-                segments.append(
-                    Segment(
-                        speaker=track.speaker,
-                        track=track.path.name,
-                        start=part_start / SR,
-                        end=part_end / SR,
-                        wav=wav[part_start:part_end].clone(),
-                    )
+        for part_start, part_end in detect_speech_intervals(wav, backend=backend):
+            segments.append(
+                Segment(
+                    speaker=track.speaker,
+                    track=track.path.name,
+                    start=part_start / SR,
+                    end=part_end / SR,
+                    wav=wav[part_start:part_end].clone(),
                 )
+            )
         if progress_callback is not None:
             progress_callback(index, total, len(segments))
     segments.sort(key=lambda segment: (segment.start, segment.end, segment.speaker))
     return segments
+
+
+def vad_backend() -> str:
+    """Выбирает детектор речи для build_segments: ``rms`` (дефолт) или ``silero``."""
+    value = os.environ.get("MAC_TRANSCRIBER_VAD", "rms").strip().lower()
+    return "silero" if value == "silero" else "rms"
+
+
+def detect_speech_intervals(
+    wav: torch.Tensor, *, backend: str
+) -> list[tuple[int, int]]:
+    """Возвращает границы кусков речи (в сэмплах) выбранным детектором.
+
+    Энергетический ``rms`` считаем всегда: ``silero``-пути он нужен для точек тихих
+    разрезов в ``split_interval``. При ``backend='silero'`` и недоступной библиотеке
+    откатываемся на ``rms`` — сервис не должен падать из-за конфигурации VAD.
+    """
+    mask, rms, _threshold = activity_mask(wav)
+    if backend == "silero":
+        try:
+            return silero_speech_intervals(wav, rms)
+        except SileroUnavailable as exc:
+            logger.warning("silero VAD unavailable, falling back to RMS: %s", exc)
+    intervals: list[tuple[int, int]] = []
+    for start, end in mask_to_intervals(mask, wav.numel()):
+        intervals.extend(split_interval(start, end, rms))
+    return intervals
+
+
+def silero_speech_intervals(
+    wav: torch.Tensor, rms: torch.Tensor
+) -> list[tuple[int, int]]:
+    """Находит речь через silero-vad, затем повторяет постобработку RMS-пути."""
+    model = load_silero_model()
+    from silero_vad import get_speech_timestamps
+
+    raw = get_speech_timestamps(wav.float(), model, sampling_rate=SR)
+    speech = [(int(item["start"]), int(item["end"])) for item in raw]
+    return refine_speech_intervals(speech, rms, wav.numel())
+
+
+def refine_speech_intervals(
+    raw: list[tuple[int, int]], rms: torch.Tensor, total_samples: int
+) -> list[tuple[int, int]]:
+    """Повторяет merge/pad/min-len/split из mask_to_intervals для любых границ."""
+    merge_gap = int(MERGE_GAP_S * SR)
+    merged: list[list[int]] = []
+    for start, end in sorted(raw):
+        if not merged or start - merged[-1][1] > merge_gap:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+
+    pad = int(PAD_S * SR)
+    min_len = int(MIN_SEGMENT_S * SR)
+    intervals: list[tuple[int, int]] = []
+    for start, end in merged:
+        start_sample = max(0, start - pad)
+        end_sample = min(total_samples, end + pad)
+        if end_sample - start_sample < min_len:
+            continue
+        intervals.extend(split_interval(start_sample, end_sample, rms))
+    return intervals
+
+
+def load_silero_model():
+    """Лениво загружает и кеширует модель silero-vad (как load_model/диаризацию)."""
+    global _SILERO_MODEL
+    with _SILERO_LOCK:
+        if _SILERO_MODEL is None:
+            try:
+                from silero_vad import load_silero_vad
+            except ImportError as exc:  # пакет silero-vad не установлен
+                raise SileroUnavailable("silero-vad is not installed") from exc
+            _SILERO_MODEL = load_silero_vad()
+        return _SILERO_MODEL
 
 
 def activity_mask(wav: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, float]:

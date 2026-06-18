@@ -62,6 +62,33 @@ For single-file speaker diarization, accept the Hugging Face terms for
 `HF_TOKEN` when installing/running the LaunchAgent. The default diarization device is
 CPU; override with `MAC_TRANSCRIBER_DIARIZATION_DEVICE` if needed.
 
+### Speech segmentation backend (VAD)
+
+`build_segments` splits each track (Zoom participant tracks and the single-file
+diarization fallback) into speech chunks before GigaAM. Two detectors are available via
+`MAC_TRANSCRIBER_VAD`:
+
+- `rms` (default): energy-threshold detector, no extra dependency.
+- `silero`: `silero-vad` neural detector. On meeting audio it fragments less, keeps
+  speech boundaries inside sentences intact, and captures slightly more speech at
+  comparable speed. Requires the `silero-vad` package (in `requirements.txt`).
+
+```env
+MAC_TRANSCRIBER_VAD=silero
+```
+
+This only changes *where* each track is cut; segment timestamps stay absolute (sample
+position in the source), so chronological order across tracks is unaffected. Speaker
+labels are unchanged: in multi-track mode the speaker is the track, not the VAD. The
+pyannote diarization path is not affected. If `MAC_TRANSCRIBER_VAD=silero` but the
+package is missing, the service logs a warning and falls back to `rms`.
+
+A/B comparison of the two detectors on existing meetings:
+
+```bash
+.venv/bin/python mac_transcriber/scripts/ab_vad_eval.py --max-meetings 4 --limit-seconds 600
+```
+
 Install and start the user LaunchAgents:
 
 ```bash
