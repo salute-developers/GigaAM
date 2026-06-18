@@ -42,6 +42,13 @@ plists=(
   "com.slack-zoom.gigaam-tunnel.plist"
 )
 
+if [[ -f "$repo_root/.env.local" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$repo_root/.env.local"
+  set +a
+fi
+
 require_command() {
   local command_path="$1"
   local name="$2"
@@ -83,6 +90,7 @@ write_plist() {
       "$plutil_bin" -replace EnvironmentVariables.MAC_TRANSCRIBER_ROOT -string "$repo_root/.local/mac_transcriber" "$target_path"
       "$plutil_bin" -replace EnvironmentVariables.MAC_TRANSCRIBER_REPORT_MODE -string "${MAC_TRANSCRIBER_REPORT_MODE:-ai}" "$target_path"
       "$plutil_bin" -replace EnvironmentVariables.MAC_TRANSCRIBER_REPORT_MODEL -string "${MAC_TRANSCRIBER_REPORT_MODEL:-gpt-5.5}" "$target_path"
+      "$plutil_bin" -replace EnvironmentVariables.MAC_TRANSCRIBER_BASELINE_UPGRADE_MODEL -string "${MAC_TRANSCRIBER_BASELINE_UPGRADE_MODEL:-}" "$target_path"
       "$plutil_bin" -replace EnvironmentVariables.MAC_TRANSCRIBER_REPORT_PDF -string "${MAC_TRANSCRIBER_REPORT_PDF:-1}" "$target_path"
       if [[ -n "${HF_TOKEN:-}" ]]; then
         "$plutil_bin" -replace EnvironmentVariables.HF_TOKEN -string "$HF_TOKEN" "$target_path"

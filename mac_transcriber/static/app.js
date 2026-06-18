@@ -132,12 +132,6 @@ async function tick() {
 async function loadConfig() {
   try {
     state.config = await fetchJson("/api/ui/config", { auth: false });
-    const localApiKey = typeof state.config.api_key === "string" ? state.config.api_key.trim() : "";
-    if (localApiKey) {
-      setApiKey(localApiKey);
-      el.apiKeyInput.value = localApiKey;
-      el.authDetails.open = false;
-    }
     el.modelBadge.textContent = state.config.model || "model";
     el.deviceBadge.textContent = `device: ${state.config.device || "cpu"}`;
     el.batchBadge.textContent = `batch: ${state.config.batch_size || 1}`;

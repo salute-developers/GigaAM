@@ -47,6 +47,8 @@
     <string>ai</string>
     <key>MAC_TRANSCRIBER_REPORT_MODEL</key>
     <string>gpt-5.5</string>
+    <key>MAC_TRANSCRIBER_BASELINE_UPGRADE_MODEL</key>
+    <string></string>
     <key>MAC_TRANSCRIBER_REPORT_PDF</key>
     <string>1</string>
     <key>MAC_TRANSCRIBER_AI_SYNTHESIS_CHUNK_LIMIT</key>

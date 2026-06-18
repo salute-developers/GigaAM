@@ -2,6 +2,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Mapping
@@ -213,6 +214,7 @@ def load_report_context_pack(
     title: str,
     source_filename: str,
     limit: int = 12,
+    query_text: str | None = None,
 ) -> tuple[dict[str, object] | None, str | None]:
     database_url = database_url_from_env()
     if not database_url:
@@ -224,6 +226,7 @@ def load_report_context_pack(
             title=title,
             source_filename=source_filename,
             limit=limit,
+            query_text=query_text,
         )
         if not _context_pack_has_content(context_pack):
             return None, None
@@ -239,12 +242,19 @@ def build_report_context_pack(
     title: str,
     source_filename: str,
     limit: int = 12,
+    query_text: str | None = None,
 ) -> dict[str, object]:
     import psycopg
     from psycopg.rows import dict_row
 
+    # query (по заголовку/имени файла) остаётся для дешёвого токен-поиска и фоллбэка.
+    # Семантический поиск ведём по содержанию текущей встречи (query_text), если оно
+    # передано, иначе откатываемся к заголовку — так контекст ищется "по смыслу",
+    # а не только по совпадению названия.
     query = _context_query(title=title, source_filename=source_filename)
+    embedding_query = _truncate_query_text(query_text) or query
     bounded_limit = max(1, min(int(limit), 50))
+    max_distance = _context_max_distance()
     semantic_chunks: list[dict[str, object]] = []
     with psycopg.connect(database_url) as conn:
         with conn.cursor(row_factory=dict_row) as cur:
@@ -297,7 +307,9 @@ def build_report_context_pack(
                 )
                 facts = [_plain_dict(row) for row in cur.fetchall()]
 
-            segment_where, segment_score, segment_params = _token_search_sql("lower(s.text)", query)
+            segment_where, segment_score, segment_params = _token_search_sql(
+                "lower(s.text)", query
+            )
             cur.execute(
                 f"""
                 SELECT
@@ -342,24 +354,29 @@ def build_report_context_pack(
                 segments = [_plain_dict(row) for row in cur.fetchall()]
 
     api_key = openai_api_key_from_env()
-    if api_key and query:
+    if api_key and embedding_query:
         try:
             semantic_chunks = search_embedding_chunks(
                 database_url,
-                query=query,
+                query=embedding_query,
                 api_key=api_key,
                 limit=bounded_limit,
                 exclude_meeting_id=meeting_id,
-                model=os.environ.get("MAC_TRANSCRIBER_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+                model=os.environ.get(
+                    "MAC_TRANSCRIBER_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL
+                ),
             )
         except Exception:
             semantic_chunks = []
+        if max_distance is not None:
+            semantic_chunks = _filter_chunks_by_distance(semantic_chunks, max_distance)
 
     return {
         "meeting_id": meeting_id,
         "title": title,
         "source_filename": source_filename,
         "query": query,
+        "embedding_query": embedding_query,
         "generated_at": datetime.now(UTC).isoformat(),
         "facts": facts,
         "segments": segments,
@@ -391,7 +408,10 @@ def build_embedding_chunks(
             return
         first_id = _segment_id_for_embedding(current[0], 1)
         last_id = _segment_id_for_embedding(current[-1], len(current))
-        segment_ids = [_segment_id_for_embedding(row, index) for index, row in enumerate(current, start=1)]
+        segment_ids = [
+            _segment_id_for_embedding(row, index)
+            for index, row in enumerate(current, start=1)
+        ]
         speakers = sorted(
             {
                 _string_or_empty(row.get("speaker"))
@@ -405,7 +425,10 @@ def build_embedding_chunks(
         text = "\n".join(
             [
                 _embedding_header(title=title, source_filename=source_filename),
-                *[_format_segment_for_embedding(row, index) for index, row in enumerate(current, start=1)],
+                *[
+                    _format_segment_for_embedding(row, index)
+                    for index, row in enumerate(current, start=1)
+                ],
             ]
         ).strip()
         chunks.append(
@@ -435,7 +458,9 @@ def build_embedding_chunks(
         if not text:
             continue
         rendered = _format_segment_for_embedding(row, len(current) + 1)
-        would_exceed_chars = current and current_chars + len(rendered) > bounded_max_chars
+        would_exceed_chars = (
+            current and current_chars + len(rendered) > bounded_max_chars
+        )
         would_exceed_count = len(current) >= bounded_max_segments
         if would_exceed_chars or would_exceed_count:
             flush_segments()
@@ -448,7 +473,9 @@ def build_embedding_chunks(
         body_text = _string_or_empty(fact.get("text"))
         if not title_text and not body_text:
             continue
-        fact_id = _string_or_empty(fact.get("id")) or _fact_identity(fact, len(chunks) + 1)
+        fact_id = _string_or_empty(fact.get("id")) or _fact_identity(
+            fact, len(chunks) + 1
+        )
         fact_type = _string_or_empty(fact.get("fact_type"))
         owner = _string_or_empty(fact.get("owner"))
         due = _string_or_empty(fact.get("due"))
@@ -550,21 +577,30 @@ def upsert_meeting_embeddings(
                     (current_meeting_id,),
                 )
                 facts = [_plain_dict(row) for row in cur.fetchall()]
-                chunks = build_embedding_chunks(meeting=meeting, segments=segments, facts=facts)
+                chunks = build_embedding_chunks(
+                    meeting=meeting, segments=segments, facts=facts
+                )
 
-                cur.execute("DELETE FROM embedding_chunks WHERE meeting_id = %s", (current_meeting_id,))
+                cur.execute(
+                    "DELETE FROM embedding_chunks WHERE meeting_id = %s",
+                    (current_meeting_id,),
+                )
                 if not chunks:
                     continue
 
                 for batch in _chunked(chunks, bounded_batch_size):
                     embeddings = _post_openai_embeddings(
                         api_key=api_key,
-                        input_texts=[_string_or_empty(chunk.get("text")) for chunk in batch],
+                        input_texts=[
+                            _string_or_empty(chunk.get("text")) for chunk in batch
+                        ],
                         model=model,
                         dimensions=dimensions,
                     )
                     if len(embeddings) != len(batch):
-                        raise RuntimeError("OpenAI embeddings response length did not match request")
+                        raise RuntimeError(
+                            "OpenAI embeddings response length did not match request"
+                        )
                     for chunk, embedding in zip(batch, embeddings, strict=True):
                         cur.execute(
                             """
@@ -605,7 +641,9 @@ def sync_meeting_embeddings_from_env(
     if not api_key:
         return None
     model = env.get("MAC_TRANSCRIBER_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL).strip()
-    batch_size = _int_from_env(env, "MAC_TRANSCRIBER_EMBEDDING_BATCH_SIZE", DEFAULT_EMBEDDING_BATCH_SIZE)
+    batch_size = _int_from_env(
+        env, "MAC_TRANSCRIBER_EMBEDDING_BATCH_SIZE", DEFAULT_EMBEDDING_BATCH_SIZE
+    )
     try:
         upsert_meeting_embeddings(
             database_url,
@@ -700,7 +738,9 @@ def search_embedding_chunks(
             return [_plain_dict(row) for row in cur.fetchall()]
 
 
-def upsert_meeting_memory(database_url: str, meeting_dir: Path, manifest_path: Path) -> str:
+def upsert_meeting_memory(
+    database_url: str, meeting_dir: Path, manifest_path: Path
+) -> str:
     import psycopg
     from psycopg.types.json import Jsonb
 
@@ -717,11 +757,15 @@ def upsert_meeting_memory(database_url: str, meeting_dir: Path, manifest_path: P
         status = {}
 
     meeting_id = _meeting_id(meeting_dir, manifest, metadata)
-    title = _string_or_none(manifest.get("title")) or _string_or_none(metadata.get("title"))
-    source_filename = _string_or_none(manifest.get("source_filename")) or _string_or_none(
-        metadata.get("source_filename")
+    title = _string_or_none(manifest.get("title")) or _string_or_none(
+        metadata.get("title")
     )
-    result = manifest.get("result") if isinstance(manifest.get("result"), dict) else None
+    source_filename = _string_or_none(
+        manifest.get("source_filename")
+    ) or _string_or_none(metadata.get("source_filename"))
+    result = (
+        manifest.get("result") if isinstance(manifest.get("result"), dict) else None
+    )
 
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
@@ -754,7 +798,9 @@ def upsert_meeting_memory(database_url: str, meeting_dir: Path, manifest_path: P
             _delete_child_rows(cur, meeting_id)
             _upsert_artifacts(cur, Jsonb, meeting_id, manifest)
             _upsert_segments(cur, Jsonb, meeting_id, transcript)
-            _upsert_facts(cur, Jsonb, meeting_id, meeting_dir / "artifacts" / "report.json")
+            _upsert_facts(
+                cur, Jsonb, meeting_id, meeting_dir / "artifacts" / "report.json"
+            )
         conn.commit()
     return meeting_id
 
@@ -796,7 +842,9 @@ def _upsert_artifacts(cur, jsonb, meeting_id: str, manifest: dict) -> None:
                 meeting_id,
                 relative_path,
                 _string_or_none(entry.get("kind")),
-                entry.get("size_bytes") if isinstance(entry.get("size_bytes"), int) else None,
+                entry.get("size_bytes")
+                if isinstance(entry.get("size_bytes"), int)
+                else None,
                 _string_or_none(entry.get("sha256")),
                 _string_or_none(entry.get("modified_at")),
                 jsonb(entry),
@@ -807,7 +855,9 @@ def _upsert_artifacts(cur, jsonb, meeting_id: str, manifest: dict) -> None:
 def _upsert_segments(cur, jsonb, meeting_id: str, transcript: object) -> None:
     rows = _transcript_rows(transcript)
     for index, row in enumerate(rows, start=1):
-        segment_id = _string_or_none(row.get("segment_id")) or _string_or_none(row.get("id"))
+        segment_id = _string_or_none(row.get("segment_id")) or _string_or_none(
+            row.get("id")
+        )
         if not segment_id:
             segment_id = f"S{index:04d}"
         cur.execute(
@@ -909,7 +959,9 @@ def _post_openai_embeddings(
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"OpenAI embeddings returned HTTP {exc.code}: {detail}") from exc
+        raise RuntimeError(
+            f"OpenAI embeddings returned HTTP {exc.code}: {detail}"
+        ) from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"OpenAI embeddings request failed: {exc}") from exc
 
@@ -927,6 +979,58 @@ def _post_openai_embeddings(
             raise RuntimeError("OpenAI embeddings response item has no embedding")
         embeddings.append([float(value) for value in embedding])
     return embeddings
+
+
+def context_query_text(
+    title: str, segment_texts: Iterable[str], *, max_chars: int = 8000
+) -> str:
+    """Собирает поисковый текст из заголовка и реплик текущей встречи.
+
+    Используется для семантического (embedding) поиска похожего контекста прошлых
+    встреч по СМЫСЛУ текущей, а не только по совпадению названия. Обрезается до
+    max_chars, чтобы не раздувать запрос к модели эмбеддингов.
+    """
+    parts: list[str] = []
+    title_text = _string_or_empty(title)
+    if title_text:
+        parts.append(title_text)
+    for text in segment_texts:
+        cleaned = _string_or_empty(text)
+        if cleaned:
+            parts.append(cleaned)
+    return " ".join(parts)[:max_chars]
+
+
+def _truncate_query_text(value: str | None, *, max_chars: int = 8000) -> str:
+    text = _string_or_empty(value)
+    return text[:max_chars] if len(text) > max_chars else text
+
+
+def _context_max_distance() -> float | None:
+    raw = _string_or_empty(os.environ.get("MAC_TRANSCRIBER_CONTEXT_MAX_DISTANCE"))
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _filter_chunks_by_distance(
+    chunks: list[dict[str, object]], max_distance: float
+) -> list[dict[str, object]]:
+    filtered: list[dict[str, object]] = []
+    for chunk in chunks:
+        distance = chunk.get("distance")
+        try:
+            value = float(distance)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            # Нет валидной дистанции — не отбрасываем (не вносим регрессию).
+            filtered.append(chunk)
+            continue
+        if value <= max_distance:
+            filtered.append(chunk)
+    return filtered
 
 
 def _context_query(*, title: str, source_filename: str) -> str:
@@ -951,7 +1055,9 @@ def _token_search_sql(expression: str, query: str) -> tuple[str, str, list[str]]
     if not tokens:
         return "false", "0", []
     clauses = [f"{expression} LIKE %s" for _token in tokens]
-    score_parts = [f"CASE WHEN {expression} LIKE %s THEN 1 ELSE 0 END" for _token in tokens]
+    score_parts = [
+        f"CASE WHEN {expression} LIKE %s THEN 1 ELSE 0 END" for _token in tokens
+    ]
     params = [f"%{token}%" for token in tokens]
     return " OR ".join(clauses), " + ".join(score_parts), params
 
@@ -978,7 +1084,9 @@ def _embedding_header(*, title: str, source_filename: str) -> str:
     return "\n".join(parts)
 
 
-def _format_segment_for_embedding(row: Mapping[str, object], fallback_index: int) -> str:
+def _format_segment_for_embedding(
+    row: Mapping[str, object], fallback_index: int
+) -> str:
     segment_id = _segment_id_for_embedding(row, fallback_index)
     start = _number_or_none(row.get("start_seconds"))
     end = _number_or_none(row.get("end_seconds"))
@@ -998,7 +1106,9 @@ def _segment_id_for_embedding(row: Mapping[str, object], fallback_index: int) ->
 def _fact_identity(fact: Mapping[str, object], fallback_index: int) -> str:
     fact_type = _string_or_empty(fact.get("fact_type")) or "fact"
     title = _string_or_empty(fact.get("title")) or str(fallback_index)
-    normalized = "".join(char if char.isalnum() else "-" for char in title.lower()).strip("-")
+    normalized = "".join(
+        char if char.isalnum() else "-" for char in title.lower()
+    ).strip("-")
     return f"{fact_type}:{normalized or fallback_index}"
 
 
@@ -1011,13 +1121,19 @@ def _format_seconds(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
-def _vector_literal(values: list[float], *, dimensions: int = EMBEDDING_DIMENSIONS) -> str:
+def _vector_literal(
+    values: list[float], *, dimensions: int = EMBEDDING_DIMENSIONS
+) -> str:
     if len(values) != dimensions:
-        raise RuntimeError(f"Embedding has {len(values)} dimensions; expected {dimensions}")
+        raise RuntimeError(
+            f"Embedding has {len(values)} dimensions; expected {dimensions}"
+        )
     return "[" + ",".join(str(float(value)) for value in values) + "]"
 
 
-def _chunked(items: list[dict[str, object]], size: int) -> list[list[dict[str, object]]]:
+def _chunked(
+    items: list[dict[str, object]], size: int
+) -> list[list[dict[str, object]]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
@@ -1076,7 +1192,9 @@ def _extract_citations(entry: dict) -> list[str]:
     for key in ("citations", "refs"):
         value = entry.get(key)
         if isinstance(value, list):
-            return [str(item) for item in value if item is not None and str(item).strip()]
+            return [
+                str(item) for item in value if item is not None and str(item).strip()
+            ]
         if isinstance(value, str) and value.strip():
             return [value.strip()]
     ref = entry.get("ref")

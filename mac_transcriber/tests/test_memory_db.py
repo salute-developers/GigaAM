@@ -371,7 +371,10 @@ def test_build_report_context_pack_falls_back_to_recent_segments(monkeypatch):
     )
 
     assert segment_queries == 2
-    assert context_pack["segments"][0]["text"] == "Недавний контекст без совпадения по названию."
+    assert (
+        context_pack["segments"][0]["text"]
+        == "Недавний контекст без совпадения по названию."
+    )
 
 
 def test_build_report_context_pack_adds_semantic_embedding_chunks(monkeypatch):
@@ -387,7 +390,10 @@ def test_build_report_context_pack_adds_semantic_embedding_chunks(monkeypatch):
 
         def execute(self, sql, params=None):
             normalized = " ".join(sql.lower().split())
-            if "from meeting_facts" in normalized or "from meeting_segments" in normalized:
+            if (
+                "from meeting_facts" in normalized
+                or "from meeting_segments" in normalized
+            ):
                 self.rows = []
             else:
                 self.rows = []
@@ -437,7 +443,10 @@ def test_build_report_context_pack_adds_semantic_embedding_chunks(monkeypatch):
         limit=3,
     )
 
-    assert context_pack["embedding_chunks"][0]["text"] == "Раньше обсуждали семантическую память."
+    assert (
+        context_pack["embedding_chunks"][0]["text"]
+        == "Раньше обсуждали семантическую память."
+    )
     assert semantic_calls[0][0] == ("postgresql://example/db",)
     assert semantic_calls[0][1]["query"] == "semantic memory"
     assert semantic_calls[0][1]["api_key"] == "test-key"
@@ -595,7 +604,10 @@ def test_upsert_meeting_embeddings_requests_openai_and_writes_vectors(monkeypatc
                 "dimensions": dimensions,
             }
         )
-        return [[float(index)] * dimensions for index, _text in enumerate(input_texts, start=1)]
+        return [
+            [float(index)] * dimensions
+            for index, _text in enumerate(input_texts, start=1)
+        ]
 
     monkeypatch.setattr(memory_db, "_post_openai_embeddings", fake_embeddings)
 
@@ -748,9 +760,7 @@ def test_upsert_meeting_memory_deletes_stale_children_and_inserts_current_rows(
     (artifacts_dir / "report.json").write_text(
         json.dumps(
             {
-                "decisions": [
-                    {"id": "D1", "text": "Ship it.", "ref": "S0001 · 00:01"}
-                ],
+                "decisions": [{"id": "D1", "text": "Ship it.", "ref": "S0001 · 00:01"}],
                 "tasks": [{"id": "T1", "text": "Write notes.", "owner": "Ilya"}],
             }
         ),
@@ -838,3 +848,132 @@ def test_upsert_meeting_memory_deletes_stale_children_and_inserts_current_rows(
         for item in flat_params
     )
     assert fake_connection.committed
+
+
+# --- Content-based (semantic) retrieval ---
+
+
+def test_context_query_text_combines_title_and_segments():
+    text = memory_db.context_query_text(
+        "Архитектура памяти",
+        ["Обсудили pgvector.", "", "Нужно хранить эмбеддинги."],
+    )
+    assert text == "Архитектура памяти Обсудили pgvector. Нужно хранить эмбеддинги."
+
+
+def test_context_query_text_truncates_to_max_chars():
+    text = memory_db.context_query_text("T", ["a" * 100], max_chars=10)
+    assert len(text) == 10
+
+
+def _install_fake_psycopg(monkeypatch, connection_factory):
+    fake_psycopg = types.ModuleType("psycopg")
+    fake_psycopg.connect = lambda *_args, **_kwargs: connection_factory()
+    fake_rows = types.ModuleType("psycopg.rows")
+    fake_rows.dict_row = object()
+    monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
+    monkeypatch.setitem(sys.modules, "psycopg.rows", fake_rows)
+
+
+class _EmptyCursor:
+    rows: list = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def execute(self, *_a, **_k):
+        self.rows = []
+
+    def fetchall(self):
+        return self.rows
+
+
+class _EmptyConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def cursor(self, *_a, **_k):
+        return _EmptyCursor()
+
+
+def test_build_report_context_pack_uses_query_text_for_semantic_search(monkeypatch):
+    semantic_calls = []
+    _install_fake_psycopg(monkeypatch, _EmptyConnection)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("MAC_TRANSCRIBER_CONTEXT_MAX_DISTANCE", raising=False)
+    monkeypatch.setattr(
+        memory_db,
+        "search_embedding_chunks",
+        lambda *args, **kwargs: semantic_calls.append(kwargs) or [],
+    )
+
+    context_pack = memory_db.build_report_context_pack(
+        "postgresql://example/db",
+        meeting_id="current",
+        title="audio.m4a",  # generic заголовок
+        source_filename="audio.m4a",  # generic имя файла -> token query пустой
+        query_text="Обсуждали стратегию ТОиР и анализ надёжности оборудования.",
+    )
+
+    # Семантический поиск идёт по содержанию текущей встречи, а не по generic-заголовку.
+    assert (
+        semantic_calls[0]["query"]
+        == "Обсуждали стратегию ТОиР и анализ надёжности оборудования."
+    )
+    assert (
+        context_pack["embedding_query"]
+        == "Обсуждали стратегию ТОиР и анализ надёжности оборудования."
+    )
+
+
+def test_build_report_context_pack_filters_chunks_by_distance(monkeypatch):
+    _install_fake_psycopg(monkeypatch, _EmptyConnection)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("MAC_TRANSCRIBER_CONTEXT_MAX_DISTANCE", "0.4")
+    monkeypatch.setattr(
+        memory_db,
+        "search_embedding_chunks",
+        lambda *args, **kwargs: [
+            {"chunk_id": "near", "text": "Релевантно.", "distance": 0.2},
+            {"chunk_id": "far", "text": "Шум.", "distance": 0.9},
+        ],
+    )
+
+    context_pack = memory_db.build_report_context_pack(
+        "postgresql://example/db",
+        meeting_id="current",
+        title="Стратегия ТОиР",
+        source_filename="audio.m4a",
+        query_text="ТОиР и надёжность",
+    )
+
+    chunk_ids = [chunk["chunk_id"] for chunk in context_pack["embedding_chunks"]]
+    assert chunk_ids == ["near"]
+
+
+def test_build_report_context_pack_falls_back_to_title_when_no_query_text(monkeypatch):
+    semantic_calls = []
+    _install_fake_psycopg(monkeypatch, _EmptyConnection)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("MAC_TRANSCRIBER_CONTEXT_MAX_DISTANCE", raising=False)
+    monkeypatch.setattr(
+        memory_db,
+        "search_embedding_chunks",
+        lambda *args, **kwargs: semantic_calls.append(kwargs) or [],
+    )
+
+    memory_db.build_report_context_pack(
+        "postgresql://example/db",
+        meeting_id="current",
+        title="Стратегия ТОиР",
+        source_filename="audio.m4a",
+    )
+
+    # Без query_text семантический поиск откатывается к заголовку (обратная совместимость).
+    assert semantic_calls[0]["query"] == "Стратегия ТОиР"

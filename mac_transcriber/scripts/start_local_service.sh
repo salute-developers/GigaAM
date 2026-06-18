@@ -3,6 +3,13 @@ set -euo pipefail
 
 cd /Users/ilyaqa/Projects/GigaAM
 
+if [[ -f .env.local ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env.local
+  set +a
+fi
+
 export MAC_TRANSCRIBER_API_KEY="${MAC_TRANSCRIBER_API_KEY:-local-test}"
 export MAC_TRANSCRIBER_ROOT="${MAC_TRANSCRIBER_ROOT:-/Users/ilyaqa/Projects/GigaAM/.local/mac_transcriber}"
 export MAC_TRANSCRIBER_MODEL="${MAC_TRANSCRIBER_MODEL:-v3_e2e_rnnt}"

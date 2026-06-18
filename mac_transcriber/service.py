@@ -7,14 +7,37 @@ from pathlib import Path
 from threading import Lock
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from mac_transcriber.archive import write_meeting_manifest
 from mac_transcriber.asr import resolve_meeting_title, transcribe_meeting
 from mac_transcriber.memory_db import sync_meeting_memory
+from mac_transcriber.reporting import ReportQuotaError
 
+
+def _load_local_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        os.environ[key.strip()] = value.strip().strip('"').strip("'")
+
+
+_load_local_env_file(Path.cwd() / ".env.local")
 
 ROOT = Path(os.environ.get("MAC_TRANSCRIBER_ROOT", ".local/mac_transcriber")).resolve()
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -40,7 +63,10 @@ ARTIFACTS = {
     "report_typ": ("report.typ", "text/plain; charset=utf-8"),
     "report_pdf": ("report.pdf", "application/pdf"),
     "segments_tsv": ("segments.tsv", "text/tab-separated-values; charset=utf-8"),
-    "speaker_track_map": ("speaker_track_map.tsv", "text/tab-separated-values; charset=utf-8"),
+    "speaker_track_map": (
+        "speaker_track_map.tsv",
+        "text/tab-separated-values; charset=utf-8",
+    ),
 }
 
 app = FastAPI(title="GigaAM Mac Transcriber")
@@ -68,8 +94,8 @@ def ui_index() -> HTMLResponse:
 @app.get("/api/ui/config")
 def ui_config() -> dict[str, object]:
     return {
+        # Не отдаём сам секрет наружу: UI запрашивает ключ у оператора, когда auth_required.
         "auth_required": bool(API_KEY),
-        "api_key": API_KEY,
         "model": MODEL_NAME,
         "device": DEVICE,
         "batch_size": BATCH_SIZE,
@@ -167,7 +193,9 @@ def meeting_status(meeting_id: str) -> dict:
     return status
 
 
-@app.get("/meetings/{meeting_id}/artifacts/{kind}", dependencies=[Depends(require_auth)])
+@app.get(
+    "/meetings/{meeting_id}/artifacts/{kind}", dependencies=[Depends(require_auth)]
+)
 def meeting_artifact(meeting_id: str, kind: str):
     if kind not in ARTIFACTS:
         raise HTTPException(status_code=404, detail="Artifact not found")
@@ -195,7 +223,9 @@ def _process_meeting(meeting_id: str) -> None:
                 cache_dir=CACHE_DIR,
                 device=DEVICE,
                 batch_size=BATCH_SIZE,
-                status_callback=lambda status, **payload: _write_status(meeting_dir, status, **payload),
+                status_callback=lambda status, **payload: _write_status(
+                    meeting_dir, status, **payload
+                ),
             )
             _write_status(
                 meeting_dir,
@@ -204,6 +234,19 @@ def _process_meeting(meeting_id: str) -> None:
                 progress=1.0,
                 message="Transcription complete",
                 result=result,
+            )
+        except ReportQuotaError as exc:
+            # Нет денег у AI-провайдера: НЕ выдаём сырой local-отчёт и НЕ помечаем
+            # failed. Транскрипт уже сохранён; ставим на паузу до пополнения, потом
+            # дообработаем через reprocess_blocked.py.
+            _write_status(
+                meeting_dir,
+                "blocked_on_quota",
+                phase="blocked_on_quota",
+                progress=0.9,
+                message=f"Paused: AI quota exhausted. Top up, then reprocess. ({exc})"[
+                    :300
+                ],
             )
         except Exception as exc:  # noqa: BLE001
             _write_status(
@@ -310,7 +353,9 @@ def _read_json_file(path: Path) -> dict:
 def _available_artifacts(meeting_dir: Path) -> list[str]:
     artifacts_dir = meeting_dir / "artifacts"
     return [
-        kind for kind, (filename, _media_type) in ARTIFACTS.items() if (artifacts_dir / filename).exists()
+        kind
+        for kind, (filename, _media_type) in ARTIFACTS.items()
+        if (artifacts_dir / filename).exists()
     ]
 
 

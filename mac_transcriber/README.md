@@ -277,6 +277,15 @@ MAC_TRANSCRIBER_REPORT_PDF=1
 MAC_TRANSCRIBER_AI_CHUNK_SIZE=80
 MAC_TRANSCRIBER_AI_SYNTHESIS_CHUNK_LIMIT=24
 MAC_TRANSCRIBER_AI_SYNTHESIS_BATCH_SIZE=4
+# Optional: retry thin current-report extraction with a stronger model before memory enrichment.
+# MAC_TRANSCRIBER_BASELINE_UPGRADE_MODEL=gpt-5.5
+# OpenRouter can be used as a primary model by prefixing the model id:
+# MAC_TRANSCRIBER_REPORT_MODEL=openrouter:google/gemini-3.1-pro-preview
+# MAC_TRANSCRIBER_BASELINE_UPGRADE_MODEL=openrouter:openai/gpt-5.5
+# Optional OpenRouter reserve when the OpenAI report request fails:
+# OPENROUTER_API_KEY=sk-or-v1-...
+# MAC_TRANSCRIBER_OPENROUTER_FALLBACK_MODEL=openai/gpt-4o-mini
+# MAC_TRANSCRIBER_OPENROUTER_MAX_TOKENS=12000
 # Optional when playwright is not on PATH:
 # MAC_TRANSCRIBER_PLAYWRIGHT=/opt/homebrew/bin/playwright
 ```
@@ -351,6 +360,48 @@ Useful options:
 The embedding backfill rebuilds chunks for selected meetings from transcript segments
 and extracted report facts. New memory syncs also attempt a best-effort embedding sync
 when both `MAC_TRANSCRIBER_DATABASE_URL` and `OPENAI_API_KEY` are configured.
+
+### Semantic prior-context retrieval
+
+Prior-meeting context is retrieved by the **meaning of the current meeting**, not just
+its title: the semantic (embedding) search query is built from the current transcript,
+so context is still found when the title/source filename is generic (e.g. `audio.m4a`).
+Token search and the recency fallback continue to use the title for cheap exact matches.
+
+Optionally drop weakly-related embedding hits by setting a maximum cosine distance
+(`0`–`2`; lower is stricter). Unset means no threshold. A good starting point:
+
+```env
+# Discard prior-context chunks whose cosine distance to the current meeting exceeds this.
+MAC_TRANSCRIBER_CONTEXT_MAX_DISTANCE=0.6
+```
+
+### Reasoning effort
+
+For gpt-5 / o-series report models the reasoning depth of the report-shaping passes
+(direct report, chunked synthesis, memory enrichment) can be raised for higher quality
+at the cost of latency/tokens. Levels: `minimal` < `low` < `medium` < `high`. Defaults
+are `medium` (report/synthesis) and `low` (enrichment); per-chunk notes stay `low`.
+
+```env
+# Override reasoning depth of the report-shaping passes (omit to keep defaults).
+MAC_TRANSCRIBER_REASONING_EFFORT=high
+```
+
+### Out-of-funds handling (AI quota)
+
+If the AI provider rejects a request for billing/quota reasons (HTTP 429
+`insufficient_quota` / "check your plan and billing"), the report is **not** allowed to
+fall back to the raw local keyword dump. Instead the meeting is parked with status
+`blocked_on_quota`: the transcript is kept, no (garbage) report is written, and the job
+is not marked `completed` or `failed`. After you top up the balance, drain the backlog
+**sequentially** (report-only — the saved transcript is reused, ASR is NOT re-run) — it
+stops at the first meeting that hits the quota again:
+
+```bash
+.venv/bin/python mac_transcriber/scripts/reprocess_blocked.py            # drain backlog
+.venv/bin/python mac_transcriber/scripts/reprocess_blocked.py --dry-run  # just list the queue
+```
 
 ## Verification
 

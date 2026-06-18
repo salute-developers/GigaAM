@@ -4,6 +4,141 @@ from fastapi.testclient import TestClient
 
 from mac_transcriber.archive import sha256_file, write_meeting_manifest
 from mac_transcriber import service
+from mac_transcriber.reporting import ReportQuotaError
+
+
+def test_process_meeting_blocks_on_quota_without_writing_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(service, "ROOT", tmp_path)
+
+    def raise_quota(**_kwargs):
+        raise ReportQuotaError("OpenAI API returned HTTP 429: insufficient_quota")
+
+    monkeypatch.setattr(service, "transcribe_meeting", raise_quota)
+
+    meeting_dir = tmp_path / "meetings" / "m1"
+    meeting_dir.mkdir(parents=True)
+    service._process_meeting("m1")
+
+    status = json.loads((meeting_dir / "status.json").read_text(encoding="utf-8"))
+    # Нет денег -> пауза, а не failed и не completed; сырой отчёт не пишется.
+    assert status["status"] == "blocked_on_quota"
+    assert not (meeting_dir / "artifacts" / "report.md").exists()
+
+
+def test_regenerate_report_from_transcript_skips_asr(tmp_path, monkeypatch):
+    from mac_transcriber import asr, reporting
+
+    monkeypatch.setenv("MAC_TRANSCRIBER_BASELINE_UPGRADE_MODEL", " ")
+    monkeypatch.setenv("MAC_TRANSCRIBER_REPORT_MODEL", "gpt-5.5")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("MAC_TRANSCRIBER_DATABASE_URL", raising=False)
+    monkeypatch.delenv("MAC_TRANSCRIBER_POSTGRES_DSN", raising=False)
+
+    mdir = tmp_path / "meetings" / "m1"
+    (mdir / "input").mkdir(parents=True)
+    (mdir / "artifacts").mkdir()
+    (mdir / "input" / "metadata.json").write_text(
+        json.dumps(
+            {"meeting_id": "m1", "title": "Sync", "source_filename": "audio.m4a"}
+        ),
+        encoding="utf-8",
+    )
+    (mdir / "artifacts" / "transcript.json").write_text(
+        json.dumps(
+            [
+                {
+                    "segment_id": "S0001",
+                    "start": 0.0,
+                    "end": 5.0,
+                    "speaker": "A",
+                    "track": "a.m4a",
+                    "text": "Договорились сделать отчёт.",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fake(*, payload, api_key):
+        return {
+            "output_text": json.dumps(
+                {
+                    "profile": {
+                        "kind": "project_sync",
+                        "label": "X",
+                        "confidence": 0.9,
+                        "rationale": "t",
+                    },
+                    "overview": "AI отчёт из готового транскрипта.",
+                    "adaptive_sections": [],
+                    "coverage": [
+                        {
+                            "segment_id": "S0001",
+                            "status": "covered",
+                            "section_titles": ["Решения"],
+                            "rationale": "t",
+                        }
+                    ],
+                    "timeline": [],
+                    "decisions": [
+                        {
+                            "title": "D",
+                            "text": "Договорились сделать отчёт.",
+                            "citations": ["S0001"],
+                        }
+                    ],
+                    "action_items": [],
+                    "open_questions": [],
+                    "risks": [],
+                    "notable_quotes": [],
+                },
+                ensure_ascii=False,
+            )
+        }
+
+    monkeypatch.setattr(reporting, "_post_openai_response", fake)
+
+    artifacts = asr.regenerate_report_from_transcript(mdir)
+
+    # Реальный AI-отчёт (не local), транскрипт не тронут.
+    assert artifacts.generated_by != "local"
+    assert (mdir / "artifacts" / "report.md").exists()
+    transcript = json.loads(
+        (mdir / "artifacts" / "transcript.json").read_text(encoding="utf-8")
+    )
+    assert transcript[0]["segment_id"] == "S0001"
+
+
+def test_load_local_env_file_overrides_report_model(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MAC_TRANSCRIBER_REPORT_MODEL=openrouter:google/gemini-3.1-pro-preview",
+                "MAC_TRANSCRIBER_BASELINE_UPGRADE_MODEL=openrouter:openai/gpt-5.5",
+                "OPENROUTER_API_KEY=sk-or-secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MAC_TRANSCRIBER_REPORT_MODEL", "gpt-5.5")
+    # Регистрируем все ключи из файла через monkeypatch, чтобы teardown их
+    # восстановил и тест не протекал в глобальный os.environ для соседних тестов.
+    monkeypatch.setenv("MAC_TRANSCRIBER_BASELINE_UPGRADE_MODEL", "placeholder")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "placeholder")
+
+    service._load_local_env_file(env_file)
+
+    assert (
+        service.os.environ["MAC_TRANSCRIBER_REPORT_MODEL"]
+        == "openrouter:google/gemini-3.1-pro-preview"
+    )
+    assert (
+        service.os.environ["MAC_TRANSCRIBER_BASELINE_UPGRADE_MODEL"]
+        == "openrouter:openai/gpt-5.5"
+    )
+    assert service.os.environ["OPENROUTER_API_KEY"] == "sk-or-secret"
 
 
 def test_create_meeting_persists_form_title(tmp_path, monkeypatch):
@@ -101,7 +236,10 @@ def test_manifest_json_artifact_is_available(tmp_path):
     (artifacts_dir / "context_pack.json").write_text("{}\n", encoding="utf-8")
 
     assert service.ARTIFACTS["manifest_json"] == ("manifest.json", "application/json")
-    assert service.ARTIFACTS["context_pack_json"] == ("context_pack.json", "application/json")
+    assert service.ARTIFACTS["context_pack_json"] == (
+        "context_pack.json",
+        "application/json",
+    )
     assert "manifest_json" in service._available_artifacts(meeting_dir)
     assert "context_pack_json" in service._available_artifacts(meeting_dir)
 
@@ -165,9 +303,7 @@ def test_terminal_status_refreshes_existing_manifest_and_syncs_memory(
     assert sync_calls[0]["manifest_path"] == artifacts_dir / "manifest.json"
     status = json.loads((meeting_dir / "status.json").read_text(encoding="utf-8"))
     assert status["memory_sync_error"] == "db down"
-    manifest = json.loads(
-        (artifacts_dir / "manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((artifacts_dir / "manifest.json").read_text(encoding="utf-8"))
     status_entry = next(
         entry for entry in manifest["files"] if entry["relative_path"] == "status.json"
     )

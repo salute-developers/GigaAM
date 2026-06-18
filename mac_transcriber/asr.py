@@ -9,6 +9,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mac_transcriber.reporting import ReportArtifacts
 
 import torch
 from torch.utils.data import DataLoader
@@ -142,7 +146,9 @@ def transcribe_meeting(
         "processing",
         phase="transcribing",
         progress=0.20 if segments else 0.82,
-        message="Transcribing speech segments" if segments else "No speech segments found",
+        message="Transcribing speech segments"
+        if segments
+        else "No speech segments found",
         segments_done=0,
         segments_total=len(segments),
         tracks_total=len(tracks),
@@ -241,7 +247,9 @@ def _clean_meeting_title(value: object) -> str:
     return title.strip()
 
 
-def _emit_progress(callback: Callable[..., None] | None, status: str, **payload: object) -> None:
+def _emit_progress(
+    callback: Callable[..., None] | None, status: str, **payload: object
+) -> None:
     if callback is not None:
         callback(status, **payload)
 
@@ -310,7 +318,9 @@ def build_diarized_segments(
     return segments
 
 
-def diarize_audio(audio_path: Path, *, device: str, metadata: dict) -> list[DiarizedTurn]:
+def diarize_audio(
+    audio_path: Path, *, device: str, metadata: dict
+) -> list[DiarizedTurn]:
     if not diarization_enabled():
         raise DiarizationUnavailable("diarization disabled")
 
@@ -370,7 +380,10 @@ def load_diarization_pipeline(*, device: str):
     global _DIARIZATION_PIPELINE, _DIARIZATION_MODEL_NAME
     pipeline_device = os.environ.get("MAC_TRANSCRIBER_DIARIZATION_DEVICE") or device
     with _DIARIZATION_LOCK:
-        if _DIARIZATION_PIPELINE is None or _DIARIZATION_MODEL_NAME != DIARIZATION_MODEL:
+        if (
+            _DIARIZATION_PIPELINE is None
+            or _DIARIZATION_MODEL_NAME != DIARIZATION_MODEL
+        ):
             try:
                 from pyannote.audio import Pipeline
             except ImportError as exc:
@@ -379,9 +392,13 @@ def load_diarization_pipeline(*, device: str):
             token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
             kwargs = {"token": token} if token else {}
             try:
-                _DIARIZATION_PIPELINE = Pipeline.from_pretrained(DIARIZATION_MODEL, **kwargs)
+                _DIARIZATION_PIPELINE = Pipeline.from_pretrained(
+                    DIARIZATION_MODEL, **kwargs
+                )
             except Exception as exc:  # noqa: BLE001
-                raise DiarizationUnavailable(f"cannot load diarization model: {exc}") from exc
+                raise DiarizationUnavailable(
+                    f"cannot load diarization model: {exc}"
+                ) from exc
             if _DIARIZATION_PIPELINE is None:
                 raise DiarizationUnavailable("cannot load diarization model")
             _DIARIZATION_MODEL_NAME = DIARIZATION_MODEL
@@ -493,7 +510,9 @@ def stable_speaker_names(turns: list[DiarizedTurn]) -> dict[str, str]:
     return names
 
 
-def speaker_tracks_from_segments(audio_path: Path, segments: list[Segment]) -> list[TrackSpec]:
+def speaker_tracks_from_segments(
+    audio_path: Path, segments: list[Segment]
+) -> list[TrackSpec]:
     speakers: list[str] = []
     for segment in segments:
         if segment.speaker not in speakers:
@@ -612,7 +631,9 @@ def transcribe_segments(
     if not segments:
         return []
     model = load_model(model_name=model_name, cache_dir=cache_dir, device=device)
-    dataset = AudioDataset([segment.wav for segment in segments if segment.wav is not None])
+    dataset = AudioDataset(
+        [segment.wav for segment in segments if segment.wav is not None]
+    )
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -625,7 +646,9 @@ def transcribe_segments(
     with torch.inference_mode():
         for wav_pad, wav_lens in loader:
             encoded, encoded_len = model.forward(wav_pad, wav_lens)
-            decoded = model._decode(encoded, encoded_len, wav_lens, word_timestamps=False)
+            decoded = model._decode(
+                encoded, encoded_len, wav_lens, word_timestamps=False
+            )
             for text, _words in decoded:
                 segments[index].text = apply_glossary(normalize_text(text))
                 segments[index].wav = None
@@ -639,7 +662,9 @@ def load_model(*, model_name: str, cache_dir: str, device: str):
     global _MODEL
     with _MODEL_LOCK:
         if _MODEL is None:
-            _MODEL = gigaam.load_model(model_name, download_root=cache_dir, device=device)
+            _MODEL = gigaam.load_model(
+                model_name, download_root=cache_dir, device=device
+            )
             _MODEL.eval()
         return _MODEL
 
@@ -657,10 +682,14 @@ def dedupe_segments(segments: list[Segment]) -> list[Segment]:
         for previous in kept[-8:]:
             if previous.speaker != segment.speaker:
                 continue
-            overlap = min(previous.end, segment.end) - max(previous.start, segment.start)
+            overlap = min(previous.end, segment.end) - max(
+                previous.start, segment.start
+            )
             if overlap <= 0:
                 continue
-            shorter = max(0.001, min(previous.end - previous.start, segment.end - segment.start))
+            shorter = max(
+                0.001, min(previous.end - previous.start, segment.end - segment.start)
+            )
             ratio = difflib.SequenceMatcher(None, previous.text, segment.text).ratio()
             if overlap / shorter > 0.55 and ratio > 0.62:
                 duplicate = True
@@ -692,12 +721,19 @@ def write_artifacts(
     )
     (output_dir / "transcript.md").write_text(transcript_md, encoding="utf-8")
     from mac_transcriber.reporting import write_report_artifacts
-    from mac_transcriber.memory_db import load_report_context_pack, sync_meeting_memory
+    from mac_transcriber.memory_db import (
+        context_query_text,
+        load_report_context_pack,
+        sync_meeting_memory,
+    )
 
+    # Контекст прошлых встреч ищем по СМЫСЛУ текущей: запрос строим из транскрипта,
+    # а не только из заголовка (у созвонов он часто generic вроде "audio.m4a").
     context_pack, context_pack_error = load_report_context_pack(
         meeting_id=meeting_id,
         title=title,
         source_filename=source_filename,
+        query_text=context_query_text(title, [segment.text for segment in segments]),
     )
     if context_pack is not None:
         (output_dir / "context_pack.json").write_text(
@@ -738,7 +774,9 @@ def write_artifacts(
             "files": report_artifacts.slack_files,
         },
         "coverage_json": str(report_artifacts.coverage_path),
-        "report_pdf": str(report_artifacts.pdf_path) if report_artifacts.pdf_path else None,
+        "report_pdf": str(report_artifacts.pdf_path)
+        if report_artifacts.pdf_path
+        else None,
         "report_pdf_error": report_artifacts.pdf_error,
     }
     if context_pack is not None:
@@ -777,7 +815,9 @@ def write_artifacts(
         render_segments_tsv(ordered_segments),
         encoding="utf-8",
     )
-    (output_dir / "speaker_track_map.tsv").write_text(render_track_map(tracks), encoding="utf-8")
+    (output_dir / "speaker_track_map.tsv").write_text(
+        render_track_map(tracks), encoding="utf-8"
+    )
 
     manifest_metadata = {
         **_load_optional_json_dict(output_dir.parent / "input" / "metadata.json"),
@@ -791,7 +831,9 @@ def write_artifacts(
     from mac_transcriber.archive import write_meeting_manifest
 
     meeting_dir = output_dir.parent
-    manifest_path = write_meeting_manifest(meeting_dir, manifest_metadata, summary_payload)
+    manifest_path = write_meeting_manifest(
+        meeting_dir, manifest_metadata, summary_payload
+    )
     memory_sync_error = sync_meeting_memory(meeting_dir, manifest_path)
     if memory_sync_error:
         summary_payload["memory_sync_error"] = memory_sync_error
@@ -800,6 +842,75 @@ def write_artifacts(
             encoding="utf-8",
         )
         write_meeting_manifest(meeting_dir, manifest_metadata, summary_payload)
+
+
+def regenerate_report_from_transcript(meeting_dir: Path) -> "ReportArtifacts":
+    """Перегенерация ТОЛЬКО отчёта из уже сохранённого транскрипта (без повторного ASR).
+
+    Для дообработки встреч blocked_on_quota после пополнения баланса: ASR — первый шаг,
+    он уже отработал и сохранил transcript.json, перезапускать его смысла нет (трата
+    времени + риск расхождения с тем, что уже в БД). Регенерируем только AI-отчёт.
+    Финализацию (манифест + синк памяти) делает вызывающий через сервисный _write_status.
+    """
+    output_dir = meeting_dir / "artifacts"
+    transcript_path = output_dir / "transcript.json"
+    if not transcript_path.exists():
+        raise FileNotFoundError(f"No transcript.json in {output_dir}")
+    segments = json.loads(transcript_path.read_text(encoding="utf-8"))
+
+    metadata = _load_optional_json_dict(meeting_dir / "input" / "metadata.json")
+    meeting_id = metadata.get("meeting_id") or meeting_dir.name
+    title = resolve_meeting_title(metadata, meeting_dir=meeting_dir)
+    source_filename = metadata.get("source_filename") or "audio.m4a"
+    model_name = metadata.get("model_name") or os.environ.get(
+        "MAC_TRANSCRIBER_MODEL", "v3_e2e_rnnt"
+    )
+
+    from mac_transcriber.reporting import write_report_artifacts
+    from mac_transcriber.memory_db import context_query_text, load_report_context_pack
+
+    context_pack, _context_pack_error = load_report_context_pack(
+        meeting_id=meeting_id,
+        title=title,
+        source_filename=source_filename,
+        query_text=context_query_text(
+            title, [str(segment.get("text", "")) for segment in segments]
+        ),
+    )
+    if context_pack is not None:
+        (output_dir / "context_pack.json").write_text(
+            json.dumps(context_pack, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    artifacts = write_report_artifacts(
+        output_dir=output_dir,
+        meeting_id=meeting_id,
+        title=title,
+        source_filename=source_filename,
+        model_name=model_name,
+        segments=segments,
+        use_ai=_report_ai_enabled(),
+        make_pdf=_env_flag("MAC_TRANSCRIBER_REPORT_PDF", default=_report_ai_enabled()),
+        report_model=os.environ.get("MAC_TRANSCRIBER_REPORT_MODEL"),
+        context_pack=context_pack,
+    )
+
+    # Обновляем report-поля в summary.json (транскриптные поля не трогаем).
+    summary_path = output_dir / "summary.json"
+    summary = _load_optional_json_dict(summary_path)
+    summary.update(
+        {
+            "report_generator": artifacts.generated_by,
+            "report_status": artifacts.status,
+            "report_alerts": artifacts.alerts,
+            "slack": {"text": artifacts.slack_text, "files": artifacts.slack_files},
+        }
+    )
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return artifacts
 
 
 def _source_filename(tracks: list[TrackSpec]) -> str:
@@ -958,14 +1069,20 @@ def _track_specs(*, input_dir: Path, metadata: dict) -> list[TrackSpec]:
         return [TrackSpec(path=input_dir / "audio.m4a", speaker="Speaker")]
 
     tracks_metadata = metadata.get("zoom_participant_tracks") or []
-    if _requires_zoom_participant_tracks(metadata) and len(tracks_metadata) != len(participant_files):
-        raise ValueError("Zoom participant track metadata does not match downloaded files")
+    if _requires_zoom_participant_tracks(metadata) and len(tracks_metadata) != len(
+        participant_files
+    ):
+        raise ValueError(
+            "Zoom participant track metadata does not match downloaded files"
+        )
     specs: list[TrackSpec] = []
     for index, path in enumerate(participant_files):
         speaker = None
         if index < len(tracks_metadata):
             speaker = tracks_metadata[index].get("speaker_name")
-        specs.append(TrackSpec(path=path, speaker=speaker or f"Zoom participant {index + 1}"))
+        specs.append(
+            TrackSpec(path=path, speaker=speaker or f"Zoom participant {index + 1}")
+        )
     return specs
 
 
