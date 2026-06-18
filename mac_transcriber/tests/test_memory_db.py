@@ -119,6 +119,38 @@ def test_extract_facts_from_report_returns_empty_for_missing_or_invalid_json(tmp
     assert memory_db.extract_facts_from_report(invalid_path) == []
 
 
+def _write_health(tmp_path, generated_by=None, status="ok"):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    report_path = artifacts / "report.json"
+    report_path.write_text("{}", encoding="utf-8")
+    if generated_by is not None:
+        (artifacts / "report_health.json").write_text(
+            json.dumps({"status": status, "generated_by": generated_by}),
+            encoding="utf-8",
+        )
+    return report_path
+
+
+def test_report_facts_trusted_only_for_ai_reports(tmp_path):
+    # AI-отчёт — доверяем; local-fallback и "ok"-local — нет.
+    assert memory_db._report_facts_trusted(
+        _write_health(tmp_path / "ai", generated_by="gpt-5.5/chunked")
+    )
+    assert memory_db._report_facts_trusted(
+        _write_health(
+            tmp_path / "ai_degraded", generated_by="gpt-5.5/chunked", status="degraded"
+        )
+    )
+    assert not memory_db._report_facts_trusted(
+        _write_health(tmp_path / "local_ok", generated_by="local", status="ok")
+    )
+    # Нет report_health.json вовсе — не доверяем (консервативно, не плодим мусор).
+    assert not memory_db._report_facts_trusted(
+        _write_health(tmp_path / "no_health", generated_by=None)
+    )
+
+
 def test_sync_meeting_memory_noops_without_database_url(monkeypatch, tmp_path):
     called = False
 
@@ -764,6 +796,11 @@ def test_upsert_meeting_memory_deletes_stale_children_and_inserts_current_rows(
                 "tasks": [{"id": "T1", "text": "Write notes.", "owner": "Ilya"}],
             }
         ),
+        encoding="utf-8",
+    )
+    # Факты в память берутся только из доверенных AI-отчётов (не local-fallback).
+    (artifacts_dir / "report_health.json").write_text(
+        json.dumps({"status": "ok", "generated_by": "gpt-5.5/chunked"}),
         encoding="utf-8",
     )
 

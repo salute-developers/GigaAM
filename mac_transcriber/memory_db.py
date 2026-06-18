@@ -887,7 +887,25 @@ def _upsert_segments(cur, jsonb, meeting_id: str, transcript: object) -> None:
         )
 
 
+def _report_facts_trusted(report_path: Path) -> bool:
+    """Можно ли доверять фактам отчёта для памяти.
+
+    Local-fallback отчёты (``generated_by == "local"``) кладут в decisions/tasks сырые
+    обрывки транскрипта по ключевым словам, а не настоящие факты. Такие в память не
+    берём: иначе prior-context толкает модель выдумывать решения. Доверяем только
+    подтверждённым AI-отчётам. Статус (ok/degraded) НЕ годится как признак: local-отчёт
+    тоже бывает ``ok``.
+    """
+    health = _read_json(report_path.parent / "report_health.json")
+    generated_by = ""
+    if isinstance(health, dict):
+        generated_by = _string_or_empty(health.get("generated_by"))
+    return bool(generated_by) and generated_by != "local"
+
+
 def _upsert_facts(cur, jsonb, meeting_id: str, report_path: Path) -> None:
+    if not _report_facts_trusted(report_path):
+        return
     for fact in extract_facts_from_report(report_path):
         cur.execute(
             """
