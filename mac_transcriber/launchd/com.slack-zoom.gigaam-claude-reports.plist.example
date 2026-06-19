@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Ежечасный слив очереди отчётов через claude (вместо платного LLM-API).
+  Замени __REPO__ на абсолютный путь к репозиторию (напр. /Users/ilyaqa/Projects/GigaAM)
+  и __HOME__ на свой домашний каталог. Установка:
+
+    cp mac_transcriber/launchd/com.slack-zoom.gigaam-claude-reports.plist.example \
+       ~/Library/LaunchAgents/com.slack-zoom.gigaam-claude-reports.plist
+    # отредактируй пути, затем:
+    chmod +x mac_transcriber/scripts/run_claude_report_drain.sh
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.slack-zoom.gigaam-claude-reports.plist
+
+  Снять с паузы/назад: launchctl bootout gui/$(id -u)/com.slack-zoom.gigaam-claude-reports
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.slack-zoom.gigaam-claude-reports</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO__/mac_transcriber/scripts/run_claude_report_drain.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.local/bin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+    </dict>
+
+    <!-- Раз в час. Поднимется на загрузке, чтобы добрать накопившееся. -->
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/slack_zoom/gigaam-claude-reports.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/slack_zoom/gigaam-claude-reports.err.log</string>
+
+    <!-- Не наслаивать запуски: если предыдущий слив ещё идёт. -->
+    <key>AbandonProcessGroup</key>
+    <false/>
+</dict>
+</plist>

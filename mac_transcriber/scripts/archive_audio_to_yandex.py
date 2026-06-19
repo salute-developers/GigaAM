@@ -149,6 +149,14 @@ def _discover(root: Path) -> list[dict]:
         inp = mdir / "input"
         if not (mdir.is_dir() and inp.is_dir()):
             continue
+        # Только завершённые встречи: нельзя удалять/трогать аудио ещё
+        # обрабатывающейся встречи (status processing/uploaded/failed).
+        try:
+            status = json.loads((mdir / "status.json").read_text("utf-8")).get("status")
+        except (OSError, json.JSONDecodeError):
+            status = None
+        if status != "completed":
+            continue
         speakers = _speaker_map(root, mdir.name)
         for f in sorted(inp.rglob("*")):
             if not (f.is_file() and f.suffix.lower() in AUDIO_EXTS):

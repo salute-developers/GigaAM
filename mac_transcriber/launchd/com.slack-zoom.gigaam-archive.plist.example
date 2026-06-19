@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>MAC_TRANSCRIBER_ROOT</key>
+		<string>/Users/ilyaqa/Projects/GigaAM/.local/mac_transcriber</string>
+		<key>MPLCONFIGDIR</key>
+		<string>/tmp/slack-zoom-matplotlib</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>Label</key>
+	<string>com.slack-zoom.gigaam-archive</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/ilyaqa/Projects/GigaAM/.venv/bin/python</string>
+		<string>mac_transcriber/scripts/archive_audio_to_yandex.py</string>
+		<string>--apply</string>
+		<string>--delete-local</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/ilyaqa/Library/Logs/slack_zoom/gigaam-archive.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/ilyaqa/Library/Logs/slack_zoom/gigaam-archive.out.log</string>
+	<key>StartInterval</key>
+	<integer>1800</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/ilyaqa/Projects/GigaAM</string>
+</dict>
+</plist>

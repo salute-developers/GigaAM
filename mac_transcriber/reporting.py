@@ -412,6 +412,15 @@ def build_ai_report(
     recover_base_items: bool = False,
     allow_baseline_upgrade: bool = True,
 ) -> MeetingReport:
+    # Kill-switch: при MAC_TRANSCRIBER_REPORT_BACKEND=claude синхронный API-путь
+    # отключён — отчёты генерит запланированный claude-джоб (drain_reports_via_claude.py).
+    # Сервис из-за этого паркует встречу в blocked_on_ai, откуда её и берёт джоб.
+    if (
+        os.environ.get("MAC_TRANSCRIBER_REPORT_BACKEND") or ""
+    ).strip().lower() == "claude":
+        raise ReportUnavailableError(
+            "report backend=claude: AI deferred to scheduled claude job"
+        )
     allow_openrouter_fallback = api_key is None
     key = api_key or load_openai_api_key()
     if not key:
@@ -1053,19 +1062,22 @@ def _enrich_ai_report_with_memory(
                 "content": (
                     "Ты добавляешь память прошлых встреч к уже готовому отчету по текущей встрече. "
                     "Не переписывай решения, задачи, вопросы, риски, timeline и основные смысловые "
-                    "разделы текущего отчета. prior_context можно использовать только как фон: "
+                    "разделы текущего отчета. Память прошлых встреч — это только фон: "
                     "связи с прежними решениями, повторяющиеся риски, открытые хвосты и полезные "
-                    "ссылки на контекст. Не выдавай prior_context за факты текущей встречи. "
+                    "ссылки на контекст. Не выдавай этот фон за факты текущей встречи. "
                     "Если ссылаешься на текущую встречу, используй только segment_id текущего "
                     "транскрипта. "
                     "Главная задача — преемственность: для каждого открытого вопроса, задачи, "
-                    "решения и риска из prior_context определи по текущему отчету и транскрипту его "
-                    "статус и явно подпиши одним из: 'всё ещё открыто', 'закрыто на этой встрече', "
+                    "решения и риска из памяти прошлых встреч определи по текущему отчету и транскрипту "
+                    "его статус и явно подпиши одним из: 'всё ещё открыто', 'закрыто на этой встрече', "
                     "'повторяется снова' или 'пересмотрено/заменено'. Открытые хвосты прошлых встреч "
                     "выноси в open_threads_from_memory, повторяющиеся риски — в recurring_risks, "
                     "связи с прежними решениями — в prior_decisions. Не выдумывай статус: если по "
                     "текущим материалам он не ясен, помечай 'всё ещё открыто'. Опирайся только на "
-                    "пункты, реально присутствующие в prior_context. "
+                    "пункты, реально присутствующие в памяти прошлых встреч. "
+                    "ВАЖНО: пиши обычным человеческим языком. Никогда не вставляй в текст служебные "
+                    "слова и имена полей (prior_context, segment_id, memory_sections, kind, "
+                    "current_report) и не оставляй пустых скобок вроде '[, ]'. "
                     "memory_sections используй только с kind из: "
                     "memory_context, prior_decisions, recurring_risks, open_threads_from_memory. "
                     "Не возвращай kind текущих разделов вроде actions, decisions, questions, "
@@ -1621,13 +1633,24 @@ def _memory_overview_section(overview_addendum: str) -> AdaptiveSection:
     )
 
 
+# Служебные термины из промптов, которые модель иногда печатает прямо в прозу
+# памяти ("в prior_context был...") — пользователь их видеть не должен.
+_META_TERM_RE = re.compile(
+    r"\b(?:prior[_ ]context|память_прошлых_встреч)\b", re.IGNORECASE
+)
+
+
+def _strip_meta_terms(value: str) -> str:
+    return _META_TERM_RE.sub("памяти прошлых встреч", value)
+
+
 def _strip_all_segment_refs(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _strip_all_segment_refs(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_strip_all_segment_refs(item) for item in value]
     if isinstance(value, str):
-        return _strip_unknown_segment_refs(value, set())
+        return _strip_meta_terms(_strip_unknown_segment_refs(value, set()))
     return value
 
 
@@ -5692,9 +5715,15 @@ def _filter_payload_citations(payload: Any, known_ids: set[str]) -> Any:
 
 
 def _strip_unknown_segment_refs(value: str, known_ids: set[str]) -> str:
-    return SEGMENT_REF_RE.sub(
+    value = SEGMENT_REF_RE.sub(
         lambda match: match.group(0) if match.group(0) in known_ids else "", value
     )
+    # После вырезания ссылок остаются осиротевшие пустые скобки "[, , ]" / "( ; )"
+    # и лишние пробелы перед пунктуацией — подчищаем, чтобы не было мусора в прозе.
+    value = re.sub(r"[\(\[]\s*(?:[,;]\s*)*[\)\]]", "", value)
+    value = re.sub(r"\s+([.,;:!?)])", r"\1", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    return value
 
 
 def _profile_confidence(value: Any, fallback: float) -> float:

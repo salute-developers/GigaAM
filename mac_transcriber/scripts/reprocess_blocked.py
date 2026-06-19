@@ -52,6 +52,23 @@ def _read_status(meeting_dir: Path) -> dict:
         return {}
 
 
+def _speech_seconds(meeting_dir: Path) -> float:
+    """Суммарная длительность речи по транскрипту (0, если транскрипта нет)."""
+    tj = meeting_dir / "artifacts" / "transcript.json"
+    try:
+        data = json.loads(tj.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0.0
+    segs = data.get("segments") if isinstance(data, dict) else data
+    if not isinstance(segs, list):
+        return 0.0
+    return sum(
+        float(s.get("end", 0)) - float(s.get("start", 0))
+        for s in segs
+        if isinstance(s, dict)
+    )
+
+
 def _blocked_meetings(meetings_root: Path) -> list[Path]:
     found: list[tuple[str, Path]] = []
     for status_path in meetings_root.glob("*/status.json"):
@@ -61,6 +78,64 @@ def _blocked_meetings(meetings_root: Path) -> list[Path]:
             found.append((str(status.get("created_at") or ""), status_path.parent))
     found.sort(key=lambda item: item[0])
     return [meeting_dir for _created, meeting_dir in found]
+
+
+# Макс. попыток авто-перегенерации завершённой встречи (защита от зацикливания на
+# встрече, которая упорно срывается в local-фоллбэк).
+MAX_REGEN_ATTEMPTS = 2
+
+
+def _needs_regen_meetings(meetings_root: Path, exclude: list[Path]) -> list[Path]:
+    """Завершённые встречи без нормального AI-отчёта: заглушка или local-фоллбэк.
+
+    Старые встречи, обработанные до включения AI-отчётов (report.md — заглушка, нет
+    report_health.json), и сорвавшиеся в сырой local-«отчёт». У них есть транскрипт —
+    регенерим отчёт из него (без повторного ASR) текущей моделью (gpt-5.5 + критик).
+    """
+    excluded = {m.resolve() for m in exclude}
+    found: list[tuple[str, Path]] = []
+    for status_path in meetings_root.glob("*/status.json"):
+        meeting_dir = status_path.parent
+        if meeting_dir.resolve() in excluded:
+            continue
+        status = _read_status(meeting_dir)
+        if status.get("status") != "completed":
+            continue
+        if not (meeting_dir / "artifacts" / "transcript.json").exists():
+            continue  # без транскрипта регенерить нечего
+        if _speech_seconds(meeting_dir) < 60:
+            continue  # пустые/тестовые встречи (мало речи) не регенерим
+        if int(status.get("report_regen_count") or 0) >= MAX_REGEN_ATTEMPTS:
+            continue
+        health = meeting_dir / "artifacts" / "report_health.json"
+        generated_by = ""
+        if health.exists():
+            try:
+                generated_by = str(
+                    json.loads(health.read_text(encoding="utf-8")).get("generated_by")
+                    or ""
+                )
+            except json.JSONDecodeError:
+                generated_by = ""
+        # Заглушка (health не сгенерился), regex-фоллбэк или странный facts-regen-путь
+        # -> на перегенерацию штатным gpt-5.5 + критик.
+        if (
+            (not health.exists())
+            or generated_by == "local"
+            or "facts-regen" in generated_by
+        ):
+            found.append((str(status.get("created_at") or ""), meeting_dir))
+    found.sort(key=lambda item: item[0])
+    return [meeting_dir for _created, meeting_dir in found]
+
+
+def _bump_regen_count(meeting_dir: Path) -> None:
+    """Счётчик попыток авто-перегенерации (до регенерации, чтобы не зациклиться)."""
+    status = _read_status(meeting_dir)
+    status["report_regen_count"] = int(status.get("report_regen_count") or 0) + 1
+    (meeting_dir / "status.json").write_text(
+        json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -85,41 +160,52 @@ def main(argv: list[str] | None = None) -> int:
 
     meetings_root = service.ROOT / "meetings"
     blocked = _blocked_meetings(meetings_root)
+    regen = _needs_regen_meetings(meetings_root, blocked)
+    regen_set = {m.resolve() for m in regen}
+    queue = blocked + regen
     if args.limit:
-        blocked = blocked[: args.limit]
+        queue = queue[: args.limit]
 
-    if not blocked:
-        print("No meetings are queued (blocked_on_quota/blocked_on_ai). Nothing to do.")
+    if not queue:
+        print("Nothing to do: no blocked meetings and no stale reports to regenerate.")
         return 0
 
-    print(f"{len(blocked)} meeting(s) queued for AI (oldest first):")
-    for meeting_dir in blocked:
-        print(f"  - {meeting_dir.name}")
+    print(
+        f"{len(queue)} meeting(s) to process "
+        f"({len(blocked)} blocked, {len(regen)} stale report(s); oldest first):"
+    )
+    for meeting_dir in queue:
+        tag = "regen" if meeting_dir.resolve() in regen_set else "blocked"
+        print(f"  - [{tag}] {meeting_dir.name}")
     if args.dry_run:
         return 0
 
     done = 0
-    for meeting_dir in blocked:
+    for meeting_dir in queue:
         meeting_id = meeting_dir.name
+        is_regen = meeting_dir.resolve() in regen_set
         print(f"\n== regenerating report for {meeting_id} (no re-ASR) ...", flush=True)
+        if is_regen:
+            # Счётчик попыток до регенерации: упорно сбойную встречу не крутим вечно.
+            _bump_regen_count(meeting_dir)
         try:
             # Только отчёт из готового транскрипта — ASR не перезапускаем.
             artifacts = regenerate_report_from_transcript(meeting_dir)
         except (ReportQuotaError, ReportUnavailableError) as exc:
-            remaining = len(blocked) - done
+            remaining = len(queue) - done
             reason = (
                 "STILL out of quota"
                 if isinstance(exc, ReportQuotaError)
                 else "AI STILL unavailable"
             )
             print(
-                f"   {reason}. Stopping. {remaining} meeting(s) left queued; "
+                f"   {reason}. Stopping. {remaining} meeting(s) left; "
                 "retry when AI is back.",
                 flush=True,
             )
             return 2
         except Exception as exc:  # noqa: BLE001
-            print(f"   FAILED (left blocked): {exc}", flush=True)
+            print(f"   FAILED (left as-is): {exc}", flush=True)
             continue
         # Финализация (манифест + синк памяти) — через штатный сервисный путь.
         service._write_status(
@@ -127,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
             "completed",
             phase="completed",
             progress=1.0,
-            message="Reprocessed after top-up",
+            message="Report regenerated",
             result={
                 "report_generator": artifacts.generated_by,
                 "report_status": artifacts.status,
@@ -136,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"   -> completed ({artifacts.generated_by})", flush=True)
         done += 1
 
-    print(f"\nDone. Reprocessed {done}/{len(blocked)} meeting(s).")
+    print(f"\nDone. Reprocessed {done}/{len(queue)} meeting(s).")
     return 0
 
 

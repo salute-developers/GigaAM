@@ -3549,3 +3549,23 @@ def test_build_report_critic_rollback_on_bad_output(monkeypatch):
     assert [item.text for item in report.decisions] == ["Решили сделать PDF отчёты."]
     assert any("AI critic skipped" in w for w in report.warnings)
     validate_report_citations(report)
+
+
+def test_strip_segment_refs_collapses_orphan_brackets():
+    # Вырезание S-ссылок не должно оставлять пустых скобок "[, , ]" в прозе.
+    out = reporting._strip_unknown_segment_refs(
+        "предпочитать варианты [S0210, S0211, S0212].", set()
+    )
+    assert "S0210" not in out
+    assert "[" not in out and "]" not in out
+    assert out == "предпочитать варианты."
+
+
+def test_memory_strip_removes_internal_prompt_terms():
+    # Служебные слова промпта ('prior_context') не должны течь в текст памяти.
+    out = reporting._strip_all_segment_refs(
+        "В prior_context был открытый вопрос [S0101]."
+    )
+    assert "prior_context" not in out.lower()
+    assert "[" not in out and "]" not in out
+    assert "памяти прошлых встреч" in out
