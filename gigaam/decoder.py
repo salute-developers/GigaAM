@@ -81,6 +81,7 @@ class RNNTDecoder(nn.Module):
         self.pred_hidden = pred_hidden
         self.embed = nn.Embedding(num_classes, pred_hidden, padding_idx=self.blank_id)
         self.lstm = nn.LSTM(pred_hidden, pred_hidden, pred_rnn_layers)
+        self.register_buffer("_device_ref", torch.empty(0), persistent=False)
 
     def predict(
         self,
@@ -96,7 +97,8 @@ class RNNTDecoder(nn.Module):
             emb: Tensor = self.embed(x)
         else:
             emb = torch.zeros(
-                (batch_size, 1, self.pred_hidden), device=next(self.parameters()).device
+                (batch_size, 1, self.pred_hidden),
+                device=self._device_ref.device,
             )
         g, hid = self.lstm(emb.transpose(0, 1), state)
         return g.transpose(0, 1), hid

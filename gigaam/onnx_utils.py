@@ -10,13 +10,13 @@ import onnxruntime as rt
 import torch
 from tqdm.auto import tqdm
 
-from .decoding import Tokenizer
+from .decoding import DEFAULT_MAX_SYMBOLS_PER_STEP, Tokenizer
 from .preprocess import FeatureExtractor
 from .utils import AudioDataset
 
 warnings.simplefilter("ignore", category=UserWarning)
 
-MAX_LETTERS_PER_FRAME = 3
+DecodedHypothesis = Tuple[str, List[int], List[int]]
 
 
 def _session_float_dtype(session: rt.InferenceSession) -> np.dtype:
@@ -40,7 +40,8 @@ def _decode_ctc_batch(
     labels: np.ndarray,
     lengths: np.ndarray,
     tokenizer: Tokenizer,
-) -> List[str]:
+    return_hypotheses: bool = False,
+) -> Union[List[str], List[DecodedHypothesis]]:
     blank_id = len(tokenizer)
     b, t = labels.shape
     lengths = np.clip(np.asarray(lengths, dtype=np.int64).reshape(-1), 0, t)
@@ -51,7 +52,15 @@ def _decode_ctc_batch(
     time = np.arange(t, dtype=np.int64)[None, :]
     skip_mask &= time < lengths[:, None]
 
-    return [tokenizer.decode(labels[i][skip_mask[i]].tolist()) for i in range(b)]
+    hyps: List[DecodedHypothesis] = []
+    for i in range(b):
+        token_ids = labels[i][skip_mask[i]].tolist()
+        token_frames = np.nonzero(skip_mask[i])[0].tolist()
+        hyps.append((tokenizer.decode(token_ids), token_ids, token_frames))
+
+    if return_hypotheses:
+        return hyps
+    return [text for text, _, _ in hyps]
 
 
 def _cat_states(
@@ -67,7 +76,14 @@ def _split_state(
 ) -> List[Tuple[np.ndarray, np.ndarray]]:
     h, c = state
     b = h.shape[1]
-    return [(h[:, i : i + 1], c[:, i : i + 1]) for i in range(b)]
+    return [(h[:, i : i + 1].copy(), c[:, i : i + 1].copy()) for i in range(b)]
+
+
+def _max_symbols_per_step(model_cfg: omegaconf.DictConfig) -> int:
+    decoding_cfg = model_cfg.get("decoding")
+    if decoding_cfg is None:
+        return DEFAULT_MAX_SYMBOLS_PER_STEP
+    return int(decoding_cfg.get("max_symbols_per_step", DEFAULT_MAX_SYMBOLS_PER_STEP))
 
 
 def _decode_rnnt_batch(
@@ -76,7 +92,8 @@ def _decode_rnnt_batch(
     model_cfg: omegaconf.DictConfig,
     sessions: List[Optional[rt.InferenceSession]],
     tokenizer: Tokenizer,
-) -> List[str]:
+    return_hypotheses: bool = False,
+) -> Union[List[str], List[DecodedHypothesis]]:
     pred_sess, joint_sess = sessions[1:]
     dtype = _session_float_dtype(pred_sess)
 
@@ -87,8 +104,10 @@ def _decode_rnnt_batch(
     B, _, T = enc_features.shape
 
     hyps: List[List[int]] = [[] for _ in range(B)]
+    token_frames: List[List[int]] = [[] for _ in range(B)]
     last_label: List[Optional[np.ndarray]] = [None] * B
     dec_state: List[Optional[Tuple[np.ndarray, np.ndarray]]] = [None] * B
+    max_symbols_per_step = _max_symbols_per_step(model_cfg)
 
     def emit_batch(batch_idx: List[int], t: int, fresh: bool) -> List[int]:
         idx = np.asarray(batch_idx, dtype=np.int64)
@@ -128,6 +147,7 @@ def _decode_rnnt_batch(
             tok = int(k[p])
 
             hyps[bi].append(tok)
+            token_frames[bi].append(t)
             last_label[bi] = np.array([[tok]], dtype=np.int64)
             dec_state[bi] = hidden_parts[p]
             out.append(bi)
@@ -140,7 +160,7 @@ def _decode_rnnt_batch(
         if not active:
             break
 
-        for _ in range(MAX_LETTERS_PER_FRAME):
+        for _ in range(max_symbols_per_step):
             if not active:
                 break
 
@@ -158,7 +178,37 @@ def _decode_rnnt_batch(
 
             active = next_active
 
-    return [tokenizer.decode(h) for h in hyps]
+    decoded = [(tokenizer.decode(h), h, tf) for h, tf in zip(hyps, token_frames)]
+    if return_hypotheses:
+        return decoded
+    return [text for text, _, _ in decoded]
+
+
+def _hypotheses_to_results(
+    decoded: List[DecodedHypothesis],
+    wav_lens: torch.Tensor,
+    encoded_lens: np.ndarray,
+    tokenizer: Tokenizer,
+):
+    from .timestamps_utils import compute_frame_shift, frames_to_words
+    from .types import TranscriptionResult
+
+    encoded_lens = np.asarray(encoded_lens, dtype=np.int64).reshape(-1)
+    out = []
+    for i, (text, token_ids, token_frames) in enumerate(decoded):
+        frame_shift = compute_frame_shift(int(wav_lens[i].item()), int(encoded_lens[i]))
+        out.append(
+            TranscriptionResult(
+                text=text,
+                words=frames_to_words(
+                    tokenizer,
+                    token_ids,
+                    token_frames,
+                    frame_shift,
+                ),
+            )
+        )
+    return out
 
 
 def infer_onnx(
@@ -170,6 +220,7 @@ def infer_onnx(
     batch_size: int = 16,
     num_workers: int = 0,
     progress: bool = True,
+    word_timestamps: bool = False,
 ) -> Union[List[str], np.ndarray, List[np.ndarray]]:
     """
     Perform inference of GigaAM model with ONNX Runtime.
@@ -184,13 +235,19 @@ def infer_onnx(
     batch_size : Inference batch size.
     num_workers : Number of workers for data loading (use for large datasets).
     progress : Whether to show progress bar.
+    word_timestamps : Whether to return TranscriptionResult objects with word
+        timestamps for ASR models.
 
     Returns
     -------
     Union[List[str], np.ndarray, List[np.ndarray]]
-        List of texts (ASR) / probs (Emo) / arrays (SSL) per sample.
+        List of texts or TranscriptionResult objects with ``word_timestamps=True``
+        (ASR) / probs (Emo) / arrays (SSL) per sample.
     """
     model_name = model_cfg.model_name
+
+    if word_timestamps and not ("ctc" in model_name or "rnnt" in model_name):
+        raise ValueError("word_timestamps is supported only for ASR models")
 
     if any(s in model_name for s in ["v1", "v2", "emo"]) and batch_size > 32:
         logging.warning(
@@ -266,15 +323,27 @@ def infer_onnx(
         batch_lengths = np.asarray(batch_outputs[1], dtype=np.int64).reshape(-1)
 
         if "ctc" in model_name:
-            texts.extend(
-                _decode_ctc_batch(batch_features.argmax(-1), batch_lengths, tokenizer)
+            decoded = _decode_ctc_batch(
+                batch_features.argmax(-1),
+                batch_lengths,
+                tokenizer,
+                return_hypotheses=word_timestamps,
             )
         else:
-            texts.extend(
-                _decode_rnnt_batch(
-                    batch_features, batch_lengths, model_cfg, sessions, tokenizer
-                )
+            decoded = _decode_rnnt_batch(
+                batch_features,
+                batch_lengths,
+                model_cfg,
+                sessions,
+                tokenizer,
+                return_hypotheses=word_timestamps,
             )
+        if word_timestamps:
+            texts.extend(
+                _hypotheses_to_results(decoded, wav_lens, batch_lengths, tokenizer)
+            )
+        else:
+            texts.extend(decoded)
 
     return texts
 

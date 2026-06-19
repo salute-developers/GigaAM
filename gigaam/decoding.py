@@ -6,6 +6,8 @@ from torch import Tensor
 
 from .decoder import CTCHead, RNNTHead
 
+DEFAULT_MAX_SYMBOLS_PER_STEP = 10
+
 
 class Tokenizer:
     """
@@ -105,7 +107,7 @@ class RNNTGreedyDecoding:
         self,
         vocabulary: List[str],
         model_path: Optional[str] = None,
-        max_symbols_per_step: int = 10,
+        max_symbols_per_step: int = DEFAULT_MAX_SYMBOLS_PER_STEP,
     ):
         self.tokenizer = Tokenizer(vocabulary, model_path)
         self.blank_id = len(self.tokenizer)
@@ -123,7 +125,10 @@ class RNNTGreedyDecoding:
         """Unpack batched (h, c) into per-sample states."""
         h, c = state
         b = h.shape[1]
-        return [(h[:, i : i + 1], c[:, i : i + 1]) for i in range(b)]
+        return [
+            (h[:, i : i + 1].contiguous(), c[:, i : i + 1].contiguous())
+            for i in range(b)
+        ]
 
     @torch.inference_mode()
     def decode(

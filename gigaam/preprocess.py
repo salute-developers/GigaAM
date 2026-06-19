@@ -47,7 +47,7 @@ class SpecScaler(nn.Module):
     """
 
     def forward(self, x: Tensor) -> Tensor:
-        return torch.log(x.clamp_(1e-9, 1e9))
+        return torch.log(x.clamp(1e-9, 1e9))
 
 
 class FeatureExtractor(nn.Module):
