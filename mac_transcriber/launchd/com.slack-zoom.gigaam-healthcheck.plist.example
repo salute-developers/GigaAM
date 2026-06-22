@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Health-check пайплайна каждые 10 минут -> heartbeat на внешний монитор.
+  Замени __REPO__ и __HOME__. push-URL монитора положи в .env.local
+  (MAC_TRANSCRIBER_HEALTHCHECK_URL=...), в plist его НЕ пишем.
+
+    cp mac_transcriber/launchd/com.slack-zoom.gigaam-healthcheck.plist.example \
+       ~/Library/LaunchAgents/com.slack-zoom.gigaam-healthcheck.plist
+    # отредактируй пути, затем:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.slack-zoom.gigaam-healthcheck.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.slack-zoom.gigaam-healthcheck</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/.venv/bin/python</string>
+        <string>mac_transcriber/scripts/pipeline_healthcheck.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.local/bin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+    </dict>
+
+    <!-- Каждые 10 минут. Монитор бьёт тревогу, если пинг пропал дольше grace. -->
+    <key>StartInterval</key>
+    <integer>600</integer>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/slack_zoom/gigaam-healthcheck.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/slack_zoom/gigaam-healthcheck.err.log</string>
+</dict>
+</plist>
