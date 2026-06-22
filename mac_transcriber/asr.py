@@ -809,6 +809,36 @@ def write_artifacts(
         segments=segments,
     )
     (output_dir / "transcript.md").write_text(transcript_md, encoding="utf-8")
+    # Транскрипт-артефакты пишем ДО report-шага. При MAC_TRANSCRIBER_REPORT_BACKEND=claude
+    # write_report_artifacts бросает ReportUnavailableError (паркует встречу в blocked_on_ai),
+    # и код ПОСЛЕ него не выполнялся -> transcript.json/segments.tsv не появлялись, и дренаж
+    # отчётов не мог обработать свежую встречу. Persist'им их здесь, до report-шага.
+    (output_dir / "transcript.json").write_text(
+        json.dumps(
+            [
+                {
+                    "segment_id": f"S{index:04d}",
+                    "start": round(segment.start, 3),
+                    "end": round(segment.end, 3),
+                    "speaker": segment.speaker,
+                    "track": segment.track,
+                    "text": segment.text,
+                }
+                for index, segment in enumerate(ordered_segments, start=1)
+            ],
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "segments.tsv").write_text(
+        render_segments_tsv(ordered_segments),
+        encoding="utf-8",
+    )
+    (output_dir / "speaker_track_map.tsv").write_text(
+        render_track_map(tracks), encoding="utf-8"
+    )
     from mac_transcriber.reporting import write_report_artifacts
     from mac_transcriber.memory_db import (
         context_query_text,
@@ -881,32 +911,8 @@ def write_artifacts(
         + "\n",
         encoding="utf-8",
     )
-    (output_dir / "transcript.json").write_text(
-        json.dumps(
-            [
-                {
-                    "segment_id": f"S{index:04d}",
-                    "start": round(segment.start, 3),
-                    "end": round(segment.end, 3),
-                    "speaker": segment.speaker,
-                    "track": segment.track,
-                    "text": segment.text,
-                }
-                for index, segment in enumerate(ordered_segments, start=1)
-            ],
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (output_dir / "segments.tsv").write_text(
-        render_segments_tsv(ordered_segments),
-        encoding="utf-8",
-    )
-    (output_dir / "speaker_track_map.tsv").write_text(
-        render_track_map(tracks), encoding="utf-8"
-    )
+    # transcript.json / segments.tsv / speaker_track_map.tsv уже записаны выше, ДО
+    # report-шага (чтобы переживать парковку blocked_on_ai при backend=claude).
 
     manifest_metadata = {
         **_load_optional_json_dict(output_dir.parent / "input" / "metadata.json"),
