@@ -7,3 +7,9 @@ build
 onnx
 train_utils/data
 train_utils/checkpoints
+
+# coverage artifacts
+.coverage
+.coverage.*
+*,cover
+htmlcov

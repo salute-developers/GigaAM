@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd /Users/ilyaqa/Projects/GigaAM
+
+if [[ -f .env.local ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env.local
+  set +a
+fi
+
+export MAC_TRANSCRIBER_API_KEY="${MAC_TRANSCRIBER_API_KEY:-local-test}"
+export MAC_TRANSCRIBER_ROOT="${MAC_TRANSCRIBER_ROOT:-/Users/ilyaqa/Projects/GigaAM/.local/mac_transcriber}"
+export MAC_TRANSCRIBER_MODEL="${MAC_TRANSCRIBER_MODEL:-v3_e2e_rnnt}"
+export MAC_TRANSCRIBER_CACHE="${MAC_TRANSCRIBER_CACHE:-/tmp/gigaam-cache}"
+export MAC_TRANSCRIBER_DEVICE="${MAC_TRANSCRIBER_DEVICE:-cpu}"
+export MAC_TRANSCRIBER_BATCH_SIZE="${MAC_TRANSCRIBER_BATCH_SIZE:-4}"
+export MAC_TRANSCRIBER_REPORT_MODE="${MAC_TRANSCRIBER_REPORT_MODE:-ai}"
+export MAC_TRANSCRIBER_REPORT_MODEL="${MAC_TRANSCRIBER_REPORT_MODEL:-gpt-5.5}"
+export MAC_TRANSCRIBER_REPORT_PDF="${MAC_TRANSCRIBER_REPORT_PDF:-1}"
+export MAC_TRANSCRIBER_AI_SYNTHESIS_CHUNK_LIMIT="${MAC_TRANSCRIBER_AI_SYNTHESIS_CHUNK_LIMIT:-24}"
+export MAC_TRANSCRIBER_AI_SYNTHESIS_BATCH_SIZE="${MAC_TRANSCRIBER_AI_SYNTHESIS_BATCH_SIZE:-4}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/slack-zoom-matplotlib}"
+
+exec .venv/bin/python -m uvicorn mac_transcriber.service:app --host 127.0.0.1 --port 18003

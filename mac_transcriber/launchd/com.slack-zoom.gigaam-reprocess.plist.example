@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.slack-zoom.gigaam-reprocess</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/ilyaqa/Projects/GigaAM</string>
+
+  <!-- Дренирует очередь blocked_on_quota/blocked_on_ai: дообрабатывает встречи,
+       отложенные из-за недоступности AI, когда API снова доступен. Секреты
+       (OPENAI_API_KEY, MAC_TRANSCRIBER_DATABASE_URL) берутся из .env.local через
+       --env-file, поэтому в plist их нет. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/ilyaqa/Projects/GigaAM/.venv/bin/python</string>
+    <string>mac_transcriber/scripts/reprocess_blocked.py</string>
+    <string>--env-file</string>
+    <string>.env.local</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>MPLCONFIGDIR</key>
+    <string>/tmp/slack-zoom-matplotlib</string>
+    <key>MAC_TRANSCRIBER_ROOT</key>
+    <string>/Users/ilyaqa/Projects/GigaAM/.local/mac_transcriber</string>
+    <key>MAC_TRANSCRIBER_REPORT_MODE</key>
+    <string>ai</string>
+    <key>MAC_TRANSCRIBER_REPORT_MODEL</key>
+    <string>gpt-5.5</string>
+    <key>MAC_TRANSCRIBER_REPORT_PDF</key>
+    <string>1</string>
+  </dict>
+
+  <!-- Периодический one-shot (не демон): запуск при загрузке и далее каждые 15 минут.
+       Без KeepAlive — он отрабатывает очередь и завершается. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/ilyaqa/Library/Logs/slack_zoom/gigaam-reprocess.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/ilyaqa/Library/Logs/slack_zoom/gigaam-reprocess.err.log</string>
+</dict>
+</plist>
