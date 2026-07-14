@@ -1,5 +1,6 @@
 import csv
 import os
+import unicodedata
 import warnings
 from collections.abc import Iterable
 from pathlib import Path
@@ -15,6 +16,35 @@ from torch.jit import TracerWarning
 
 from .preprocess import SAMPLE_RATE
 from .types import AudioDatasetSample
+
+
+def normalize_raw_text(text: str) -> str:
+    """
+    Script-agnostic normalization: lowercase, collapse whitespace,
+    and keep only alphanumeric characters plus spaces — i.e. drop punctuation/symbols.
+
+    Word-internal apostrophes are preserved (e.g. ``don't`` stays ``don't``).
+    Apostrophe variants are normalized to ASCII ``'``.
+    Standalone quotes are dropped (not between two alphanumerics).
+    Hyphens/dashes (Unicode category Pd) split words (``word-internal`` -> ``word internal``).
+    """
+    text = text.replace("ё", "е").replace("Ё", "Е").lower()
+    for quote in ("’", "‘", "ʻ", "ʼ"):
+        text = text.replace(quote, "'")
+    out = []
+    for i, c in enumerate(text):
+        if c == "'":
+            if (
+                0 < i < len(text) - 1
+                and text[i - 1].isalnum()
+                and text[i + 1].isalnum()
+            ):
+                out.append(c)
+        elif c.isalnum() or c.isspace():
+            out.append(c)
+        elif unicodedata.category(c) == "Pd":
+            out.append(" ")
+    return " ".join("".join(out).split())
 
 
 def onnx_converter(
@@ -229,14 +259,13 @@ class AudioDataset(torch.utils.data.Dataset):
         if not self.raw_text:
             return text
 
-        text = text.replace("ё", "е").replace("Ё", "Е")
-        text = " ".join(text.split())
+        text = normalize_raw_text(text)
 
         if self.tokenizer is not None and getattr(self.tokenizer, "charwise", False):
             vocab = set(self.tokenizer.vocab)
-            return "".join(c for c in text.lower() if c in vocab)
+            return "".join(c for c in text if c in vocab)
 
-        return text.lower()
+        return text
 
     @staticmethod
     def _get_duration(item: Union[str, np.ndarray, Tensor]) -> float:

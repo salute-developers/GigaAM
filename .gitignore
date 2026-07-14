@@ -7,3 +7,7 @@ build
 onnx
 train_utils/data
 train_utils/checkpoints
+.venv
+.mypy_cache
+.pytest_cache
+scripts

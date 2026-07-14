@@ -12,14 +12,7 @@ from pytorch_lightning.callbacks import Callback, TQDMProgressBar
 from tqdm.auto import tqdm
 
 from gigaam.preprocess import SAMPLE_RATE
-
-
-def normalize_raw_text(text: str) -> str:
-    text = text.replace("ё", "е").replace("Ё", "Е")
-    text = " ".join(text.split())
-    return "".join(
-        c for c in text.lower() if ord("а") <= ord(c) <= ord("я") or c == " "
-    )
+from gigaam.utils import normalize_raw_text  # noqa: F401
 
 
 def compute_wer(preds: List[Dict[str, Any]]) -> Tuple[float, float, int, int, int, int]:
@@ -113,6 +106,92 @@ def load_tonebooks(out_dir: str, max_duration: float = 30.0, workers: int = 8) -
     return out
 
 
+def load_fleurs(
+    out_dir: str,
+    lang: str,
+    dataset: str = "google/fleurs",
+    train_split: str = "train",
+    val_split: str = "validation",
+    max_duration: float = 30.0,
+    max_train_samples: Optional[int] = None,
+    max_val_samples: Optional[int] = None,
+    workers: int = 8,
+) -> Path:
+    """
+    Download a FLEURS language dataset and save manifests to the output directory.
+    Creates train / val .tsv files with the following columns: path, duration, transcription.
+    """
+
+    import io
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from huggingface_hub import hf_hub_download, list_repo_files
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    repo_files = list_repo_files(dataset, repo_type="dataset")
+
+    def build_split(hf_split: str, split: str, samples: Optional[int]) -> List[str]:
+        prefix = f"parquet-data/{lang}/{hf_split}-"
+        shards = sorted(
+            f for f in repo_files if f.startswith(prefix) and f.endswith(".parquet")
+        )
+        if not shards:
+            raise FileNotFoundError(
+                f"No parquet shards under '{prefix}*' in {dataset}; "
+                f"check the language code ('{lang}') and split ('{hf_split}')."
+            )
+        tables = []
+        n_rows = 0
+        for shard in shards:
+            pf = hf_hub_download(dataset, shard, repo_type="dataset")
+            tables.append(pq.read_table(pf, columns=["audio", "transcription"]))
+            n_rows += tables[-1].num_rows
+            if samples is not None and n_rows >= samples:
+                break
+        table = pa.concat_tables(tables)
+
+        audios = table.column("audio")
+        texts = table.column("transcription")
+        n = table.num_rows if samples is None else min(samples, table.num_rows)
+        audio_dir = out / "audio" / split
+        audio_dir.mkdir(parents=True, exist_ok=True)
+
+        def process_one(i: int) -> Optional[str]:
+            text = (texts[i].as_py() or "").strip()
+            data, sr = sf.read(io.BytesIO(audios[i].as_py()["bytes"]), dtype="float32")
+            dur = len(data) / sr
+            if dur > max_duration:
+                return None
+            p = audio_dir / f"{i:06d}.wav"
+            if not p.exists():
+                sf.write(str(p), data, sr)
+            return f"audio/{split}/{i:06d}.wav\t{dur:.3f}\t{text}"
+
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, n))) as ex:
+            lines = list(
+                tqdm(ex.map(process_one, range(n)), total=n, desc=f"{split} ({n})")
+            )
+        return [ln for ln in lines if ln is not None]
+
+    print(f"Loading {dataset} [{lang}]...")
+    for hf_split, split, samples in (
+        (train_split, "train", max_train_samples),
+        (val_split, "val", max_val_samples),
+    ):
+        rows = build_split(hf_split, split, samples)
+        path = out / f"manifest_{split}.tsv"
+        path.write_text(
+            "path\tduration\ttranscription\n" + "\n".join(rows) + "\n",
+            encoding="utf-8",
+        )
+        print(f"  {path} ({len(rows)} samples)")
+
+    print(f"\nDone! Manifests at {out}")
+    return out
+
+
 class StepProgressBar(TQDMProgressBar):
 
     def __init__(self, steps_per_epoch: Optional[int] = None):
@@ -189,8 +268,10 @@ def build_exp_name(args) -> str:
             parts.append(f"vci{_fmt_float(args.val_check_interval)}")
     if args.warmup_ratio != 0.1:
         parts.append(f"wmp{_fmt_float(args.warmup_ratio)}")
-    if args.freeze_encoder:
+    if args.freeze_encoder_epochs == -1:
         parts.append("frenc")
+    elif args.freeze_encoder_epochs > 0:
+        parts.append(f"frenc{args.freeze_encoder_epochs}")
     if args.activation_checkpointing:
         parts.append("acckpt")
     if args.val_first_batches is not None:

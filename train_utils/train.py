@@ -8,6 +8,10 @@ import torch
 from module import GigaAMFineTuner
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
+from ssl_finetune import (
+    build_asr_from_ssl,
+    resolve_vocab,
+)
 from torch.utils.data import DataLoader
 from utils import (
     EpochTimeLogger,
@@ -17,6 +21,7 @@ from utils import (
 )
 
 import gigaam
+from gigaam.decoder import RNNTHead
 from gigaam.utils import AudioDataset
 
 
@@ -42,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--devices", type=int, default=1)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--activation_checkpointing", action="store_true")
-    p.add_argument("--freeze_encoder", action="store_true")
+    p.add_argument("--freeze_encoder_epochs", type=int, default=0)
     p.add_argument("--raw_text", action="store_true")
     p.add_argument("--warmup_ratio", type=float, default=0.1)
     p.add_argument("--max_epochs", type=int, default=None)
@@ -60,6 +65,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--time_masks", type=int, default=2)
     p.add_argument("--time_width", type=int, default=20)
     p.add_argument("--resume_from_checkpoint", type=str, default=None)
+    p.add_argument("--head", choices=["ctc", "rnnt"], default="ctc")
+    p.add_argument("--rnnt_pred_hidden", type=int, default=320)
+    p.add_argument("--rnnt_pred_rnn_layers", type=int, default=1)
+    p.add_argument("--rnnt_joint_hidden", type=int, default=320)
+    vocab_src = p.add_mutually_exclusive_group()
+    vocab_src.add_argument("--vocab", type=str, default=None)
+    vocab_src.add_argument("--build_vocab_from_manifest", action="store_true")
+    p.add_argument("--save_vocab", type=str, default=None)
 
     args = p.parse_args()
     assert (args.max_steps is not None) ^ (
@@ -85,24 +98,49 @@ def main():
 
     print(f"Loading pretrained {args.model_name} ...")
     model = gigaam.load_model(args.model_name, fp16_encoder=False, device="cpu")
-    assert isinstance(
-        model, gigaam.GigaAMASR
-    ), "Fine-tuning expects an ASR model (GigaAMASR)"
+    ssl_run = False
+    if isinstance(model, gigaam.GigaAMASR):
+        if args.vocab or args.build_vocab_from_manifest or args.save_vocab:
+            raise RuntimeError(
+                "Custom vocabularies (--vocab / --build_vocab_from_manifest / "
+                f"--save_vocab) are currently supported only for SSL backbones; "
+                f"'{args.model_name}' is a trained ASR model with a fixed vocabulary."
+            )
+    elif type(model) is not gigaam.GigaAM:
+        raise RuntimeError(
+            f"'{args.model_name}' ({type(model).__name__}) is neither a trained ASR "
+            f"model nor an SSL backbone; it cannot be fine-tuned for ASR."
+        )
+    else:
+        ssl_run = True
+        vocab = resolve_vocab(args)
+        label_mode = "raw (normalized)" if args.raw_text else "e2e (verbatim text)"
+        print(
+            f"SSL backbone '{args.model_name}': building a randomly initialized {args.head.upper()} "
+            f"head (vocab={len(vocab)} chars + blank), labels: {label_mode}"
+        )
+        model = build_asr_from_ssl(
+            model,
+            vocab,
+            head_type=args.head,
+            raw_text=args.raw_text,
+            rnnt_pred_hidden=args.rnnt_pred_hidden,
+            rnnt_pred_rnn_layers=args.rnnt_pred_rnn_layers,
+            rnnt_joint_hidden=args.rnnt_joint_hidden,
+        )
 
     if args.activation_checkpointing:
         model.encoder.activation_checkpointing = True
         print("Encoder: activation checkpointing on (per Conformer layer)")
     tokenizer = model.decoding.tokenizer
     blank_id = model.decoding.blank_id
-    orig_model_name = model.cfg.model_name
-    is_e2e = "e2e" in orig_model_name
-    print(
-        f"Mode: {'rnnt' if 'rnnt' in orig_model_name else 'ctc'} | vocab={len(tokenizer)}, blank={blank_id}"
-    )
+    is_e2e = "e2e" in model.cfg.model_name
+    mode = "rnnt" if isinstance(model.head, RNNTHead) else "ctc"
+    print(f"Mode: {mode} | vocab={len(tokenizer)}, blank={blank_id}")
 
     if args.raw_text and is_e2e:
         raise ValueError("--raw_text is only for non-e2e models (charwise vocab)")
-    if not is_e2e and not args.raw_text:
+    if not is_e2e and not args.raw_text and not ssl_run:
         warnings.warn(
             "Non-e2e model without --raw_text: text won't be normalized. "
             "Consider --raw_text to strip punctuation to vocab chars.",
@@ -141,7 +179,7 @@ def main():
         model=model,
         blank_id=blank_id,
         lr=args.lr,
-        freeze_encoder=args.freeze_encoder,
+        freeze_encoder_epochs=args.freeze_encoder_epochs,
         rnnt_subbatch_size=args.rnnt_subbatch_size,
         weight_decay=args.weight_decay,
         warmup_ratio=args.warmup_ratio,
@@ -162,10 +200,18 @@ def main():
         save_top_k=max(1, args.save_top_k),
     )
 
+    strategy = "auto"
+    if args.devices > 1:
+        strategy = (
+            "ddp_find_unused_parameters_true"
+            if args.freeze_encoder_epochs > 0
+            else "ddp"
+        )
+
     trainer_kw = dict(
         accelerator=args.accelerator,
         devices=args.devices,
-        strategy="ddp" if args.devices > 1 else "auto",
+        strategy=strategy,
         precision=args.precision,
         accumulate_grad_batches=args.accumulate_grad_batches,
         gradient_clip_val=args.gradient_clip_val,

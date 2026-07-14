@@ -5,6 +5,7 @@ import editdistance
 import pytorch_lightning as pl
 import torch
 import torch.distributed as dist
+from omegaconf import OmegaConf
 from torch import Tensor, nn
 from torchaudio.functional import rnnt_loss as _ta_rnnt_loss
 from torchaudio.transforms import FrequencyMasking, TimeMasking
@@ -20,7 +21,7 @@ class GigaAMFineTuner(pl.LightningModule):
         model: GigaAMASR,
         blank_id: int,
         lr: float = 1e-4,
-        freeze_encoder: bool = False,
+        freeze_encoder_epochs: int = 0,
         rnnt_subbatch_size: int = 0,
         weight_decay: float = 0.01,
         warmup_ratio: float = 0.1,
@@ -36,6 +37,10 @@ class GigaAMFineTuner(pl.LightningModule):
         self.save_hyperparameters(ignore=["model", "cli_args"])
         if cli_args is not None:
             self.save_hyperparameters(cli_args)
+
+        self.save_hyperparameters(
+            {"model_cfg": OmegaConf.to_container(model.cfg, resolve=True)}
+        )
         self.preprocessor = model.preprocessor
         self.encoder = model.encoder
         self.head = model.head
@@ -43,7 +48,7 @@ class GigaAMFineTuner(pl.LightningModule):
         self._tokenizer = model.decoding.tokenizer
         self._blank_id = blank_id
         self._rnnt_subbatch_size = rnnt_subbatch_size
-        self._freeze_encoder = freeze_encoder
+        self._freeze_encoder_epochs = freeze_encoder_epochs
 
         self._spec_augment = spec_augment
         if spec_augment:
@@ -73,20 +78,32 @@ class GigaAMFineTuner(pl.LightningModule):
 
         for p in self.preprocessor.parameters():
             p.requires_grad = False
-        if freeze_encoder:
+        if self._freeze_encoder_epochs == -1:
             for p in self.encoder.parameters():
                 p.requires_grad = False
         self._val_errors = self._val_words = 0
+
+    def _encoder_frozen(self) -> bool:
+        return self._freeze_encoder_epochs == -1 or (
+            self._freeze_encoder_epochs > 0
+            and self.current_epoch < self._freeze_encoder_epochs
+        )
 
     def train(self, mode: bool = True) -> "GigaAMFineTuner":
         super().train(mode)
         # We keep it verbose for the freezed preprocessor
         self.preprocessor.eval()
-        if self._freeze_encoder:
+        if self._encoder_frozen():
             self.encoder.eval()
         return self
 
     def on_train_epoch_start(self):
+        if (
+            self._freeze_encoder_epochs > 0
+            and self.current_epoch == self._freeze_encoder_epochs
+            and self.trainer.is_global_zero
+        ):
+            print(f"  encoder unfrozen at epoch {self.current_epoch}")
         self.train()
 
     def _ctc_loss(
@@ -125,6 +142,9 @@ class GigaAMFineTuner(pl.LightningModule):
                 features = aug(features)
             for aug in self._time_aug:
                 features = aug(features)
+        if self._encoder_frozen():
+            with torch.no_grad():
+                return self.encoder(features, feat_lens)
         return self.encoder(features, feat_lens)
 
     def _rnnt_joint(self, encoded: Tensor, tokens: Tensor) -> Tensor:
@@ -249,14 +269,19 @@ class GigaAMFineTuner(pl.LightningModule):
                 f"val/wer={wer:.4f}"
             )
 
-    def configure_optimizers(
+    def configure_optimizers(  # type: ignore[override]
         self,
     ) -> Tuple[List[torch.optim.Optimizer], List[Dict[str, Any]]]:
-        opt = torch.optim.AdamW(
-            [p for p in self.parameters() if p.requires_grad],
-            lr=self._lr,
-            weight_decay=self._wd,
-        )
+        # Include encoder params even if currently frozen for staged training, so
+        # they are already in the optimizer when unfrozen mid-run
+        params = []
+        for name, p in self.named_parameters():
+            if name.startswith("preprocessor."):
+                continue
+            if self._freeze_encoder_epochs == -1 and name.startswith("encoder."):
+                continue
+            params.append(p)
+        opt = torch.optim.AdamW(params, lr=self._lr, weight_decay=self._wd)
         total = self.trainer.estimated_stepping_batches
         warmup = max(1, int(self._warmup_ratio * total))
         decay = max(1, total - warmup)

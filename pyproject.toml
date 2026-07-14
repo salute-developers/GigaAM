@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gigaam"
-version = "0.1.0"
+version = "0.2.0"
 description = "GigaAM: A package for audio modeling and ASR."
 readme = "README.md"
 license = "MIT"
@@ -54,7 +54,7 @@ tests = [
 lint = [
     "black==26.1.0",
     "isort==7.0.0",
-    "flake8",
+    "flake8==7.3.0",
     "mypy",
     "types-requests",
 ]
@@ -70,3 +70,9 @@ line-length = 88
 
 [tool.isort]
 profile = "black"
+
+[tool.pytest.ini_options]
+markers = [
+    "full: full model-revision tests that download every checkpoint",
+    "partial: lightweight subset of model-revision tests",
+]

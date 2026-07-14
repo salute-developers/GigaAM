@@ -50,6 +50,41 @@ python train.py \
     --val_first_batches 50
 ```
 
+### Fine-tuning a new language from an SSL backbone
+
+The `*_ssl` models (e.g. `multilingual_ssl`) are self-supervised backbones: a preprocessor and a Conformer encoder, without an ASR decoder. To adapt one to a new language (Georgian, Bashkir, ...), pass the SSL model as `--model_name` together with a target vocabulary — `train.py` then attaches a freshly initialized character-wise head and fine-tunes it. Choose the head with `--head ctc` (default) or `--head rnnt`.
+
+The vocabulary is either derived from your training transcriptions or supplied as a file. With `--raw_text` (recommended) the labels are normalized charwise (lowercase, punctuation stripped) and the derived vocabulary follows; without it the verbatim transcriptions are used (e2e-style, case and punctuation become output classes). A file-supplied vocabulary is used as-is — mismatches against the manifests are reported as warnings:
+
+```bash
+# CTC head, alphabet derived straight from the manifest transcriptions
+python train.py \
+    --model_name multilingual_ssl \
+    --head ctc \
+    --train_manifest /path/to/ka_train.tsv \
+    --val_manifest /path/to/ka_val.tsv \
+    --build_vocab_from_manifest \
+    --save_vocab ./ka_vocab.json \
+    --raw_text \
+    --max_epochs 5 \
+    --val_check_interval 0.5 \
+    --batch_size 16 \
+    --lr 1e-4 \
+    --activation_checkpointing
+
+# RNN-T head, with an explicit vocabulary file
+python train.py \
+    --model_name multilingual_ssl \
+    --head rnnt \
+    --train_manifest /path/to/ba_train.tsv \
+    --val_manifest /path/to/ba_val.tsv \
+    --vocab ./ka_vocab.json \
+    --raw_text \
+    --rnnt_subbatch_size 2 \
+    --max_epochs 5 --batch_size 16 --lr 1e-4
+```
+
+
 ### Arguments
 
 #### Model and data
@@ -59,9 +94,16 @@ python train.py \
 | `--model_name` | required | Pretrained GigaAM model name |
 | `--train_manifest` | required | TSV manifest for training |
 | `--val_manifest` | required | TSV manifest for validation |
+| `--head` | `ctc` | Head to attach when fine-tuning from an SSL backbone: `ctc` or `rnnt` (ignored for trained ASR models) |
+| `--rnnt_pred_hidden` | `320` | RNN-T predictor hidden size (SSL `--head rnnt`) |
+| `--rnnt_pred_rnn_layers` | `1` | RNN-T predictor LSTM layers (SSL `--head rnnt`) |
+| `--rnnt_joint_hidden` | `320` | RNN-T joint network hidden size (SSL `--head rnnt`) |
 | `--raw_text` | off | For non-E2E setups: lowercase text, drop punctuation, restrict to the character vocabulary |
 | `--max_duration` | `20.0` | Maximum audio length in seconds (dataset filter) |
 | `--min_duration` | `0.1` | Minimum audio length in seconds (dataset filter) |
+| `--vocab` | `None` | Target vocabulary file (SSL backbone only): a `.json` list |
+| `--build_vocab_from_manifest` | off | Derive the character vocabulary from the train manifest transcriptions (SSL backbone only) |
+| `--save_vocab` | `None` | Optional path to dump the resolved vocabulary as JSON |
 
 #### Scheduling (epochs vs steps)
 
@@ -86,7 +128,7 @@ python train.py \
 | `--accelerator` | `auto` | Lightning accelerator (`auto`, `cpu`, `gpu`, ...) |
 | `--devices` | `1` | Number of devices (DDP when `> 1`) |
 | `--activation_checkpointing` | off | Activation checkpointing for each Conformer layer |
-| `--freeze_encoder` | off | Freeze encoder weights |
+| `--freeze_encoder_epochs` | `0` | `-1` — freeze encoder weights for the entire run; `0` — usual fine-tuning (encoder always trainable); `N > 0` — staged fine-tuning: encoder is frozen for the first `N` epochs, then unfrozen |
 
 #### Optimizer
 

@@ -1,4 +1,6 @@
+import csv
 import gc
+import json
 import os
 import re
 import shutil
@@ -182,6 +184,10 @@ def _run_training_case(
         str(max_steps),
         "--val_check_steps",
         str(max_steps),
+        "--accelerator",
+        "cpu",
+        "--devices",
+        "1",
         "--disable_tqdm",
         "--log_every_n_steps",
         "1",
@@ -216,6 +222,101 @@ def _run_training_case(
     e2e_wer = _extract_e2e_wer(eval_run.stdout)
     assert e2e_wer <= e2e_threshold
     assert baseline_e2e - e2e_wer >= min_e2e_gain
+
+
+def _head_out_classes(model: "gigaam.GigaAMASR") -> int:
+    """Number of output classes of the ASR head."""
+    if hasattr(model.head, "decoder_layers"):  # CTCHead
+        return model.head.decoder_layers[0].out_channels
+    return model.head.joint.joint_net[-1].out_features  # RNNTHead
+
+
+@pytest.mark.parametrize(
+    ("head", "extra_args"),
+    [
+        ("ctc", ["--raw_text"]),  # normalized charwise labels
+        ("rnnt", ["--rnnt_subbatch_size", "1"]),  # e2e mode: verbatim labels
+    ],
+)
+def test_ssl_finetune_cpu(
+    tmp_path: Path, pseudo_labeled_dataset: Path, head: str, extra_args: list[str]
+) -> None:
+    """
+    Fine-tune a new head on top of an SSL backbone, then verify
+    the checkpoint is self-contained: it reloads via ``gigaam.load_model`` as a ``GigaAMASR``.
+    """
+    model_name = "multilingual_ssl"
+    exp_name = f"pytest_ssl_ft_{head}"
+    output_dir = tmp_path / "artifacts"
+    vocab_path = tmp_path / "vocab.json"
+
+    try:
+        _run_python(
+            [
+                "train.py",
+                "--model_name",
+                model_name,
+                "--head",
+                head,
+                "--train_manifest",
+                str(pseudo_labeled_dataset),
+                "--val_manifest",
+                str(pseudo_labeled_dataset),
+                "--output_dir",
+                str(output_dir),
+                "--exp_name",
+                exp_name,
+                "--build_vocab_from_manifest",
+                "--save_vocab",
+                str(vocab_path),
+                "--batch_size",
+                "1",
+                "--eval_batch_size",
+                str(MAX_SAMPLES),
+                "--num_workers",
+                "0",
+                "--precision",
+                "32",
+                "--accelerator",
+                "cpu",
+                "--devices",
+                "1",
+                "--max_steps",
+                "2",
+                "--val_check_steps",
+                "2",
+                "--disable_tqdm",
+                "--log_every_n_steps",
+                "1",
+                "--skip_initial_validation",
+                "--save_top_k",
+                "1",
+                "--freeze_encoder_epochs",
+                "-1",
+            ]
+            + extra_args,
+            cwd=TRAIN_UTILS_DIR,
+        )
+
+        ckpt_dir = output_dir / "models" / exp_name
+        checkpoints = sorted(ckpt_dir.glob("*.ckpt"))
+        assert checkpoints, f"No checkpoints found in {ckpt_dir}"
+
+        vocab = json.loads(vocab_path.read_text(encoding="utf-8"))
+        assert " " in vocab and len(vocab) > 1, f"Unexpected derived vocab: {vocab}"
+
+        model = gigaam.load_model(str(checkpoints[0]), device="cpu")
+        assert isinstance(model, gigaam.GigaAMASR)
+        assert list(model.decoding.tokenizer.vocab) == vocab
+        assert model.decoding.blank_id == len(vocab)
+        assert _head_out_classes(model) == len(vocab) + 1
+
+        with open(pseudo_labeled_dataset) as f:
+            first_audio = next(csv.DictReader(f, delimiter="\t"))["path"]
+        assert isinstance(str(model.transcribe(first_audio)), str)
+    finally:
+        if output_dir.exists():
+            shutil.rmtree(output_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

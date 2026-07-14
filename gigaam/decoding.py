@@ -68,7 +68,7 @@ class CTCGreedyDecoding:
         C = log_probs.shape[-1]
         assert (
             C == len(self.tokenizer) + 1
-        ), f"Num classes {C} != len(vocab)+1 {len(self.tokenizer)+1}"
+        ), f"Num classes {C} != len(vocab)+1 {len(self.tokenizer) + 1}"
         labels = log_probs.argmax(dim=-1)
 
         B, T = labels.shape

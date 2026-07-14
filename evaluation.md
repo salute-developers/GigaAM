@@ -1,4 +1,4 @@
-## ASR
+## Russian ASR
 
 Word Error Rate (%) across all validation sets for ASR models:
 
@@ -18,6 +18,27 @@ Word Error Rate (%) across all validation sets for ASR models:
 | **Average**             | **9.1**| **8.3** |       12.0 |        11.2 |   11.1 |    10.6 |   14.2 |    13.8 |       16.3 |    21.0 |
 
 \* with post-processing applied (removing punctuation and capitalization, replacing numerals, etc.)
+
+## Multilingual ASR
+
+Word Error Rate (%) is reported on [Common Voice](https://commonvoice.mozilla.org) (CV), [FLEURS](https://huggingface.co/datasets/google/fleurs), and internal in-the-wild test sets. Evaluation protocol: utterances longer than 30 s and references containing digits are excluded; references/hypotheses are normalized (lowercasing, punctuation removal, numerals→words); greedy decoding. Lower is better; best per row in **bold**, second-best <u>underlined</u>.
+
+| Language | Dataset | GigaAM Multilingual 220M | GigaAM Multilingual 600M | Omnilingual 1B (LLM) | Seamless M4T large v2 | Whisper large v3 |
+|:--------|:--------|------------:|------------:|---------------------:|----------------------:|-----------------:|
+| English | CV       |        26.0 |        21.5 |                 24.7 |              **16.2** | <u>20.0</u> |
+| English | FLEURS   |        12.2 |         9.4 |                  7.1 |           <u>5.8</u> |     **3.9** |
+| Russian | CV       |  <u>7.1</u> |     **5.1** |                 13.6 |                   9.2 |         9.1 |
+| Russian | FLEURS   |         4.4 |     **3.0** |                  6.4 |                   4.6 | <u>3.1</u> |
+| Russian | Internal |  <u>7.6</u> |     **6.0** |                 14.6 |                  16.1 |        10.1 |
+| Kazakh  | CV       | <u>17.2</u> |    **13.8** |                 23.7 |                  23.8 |        57.8 |
+| Kazakh  | FLEURS   |  <u>5.2</u> |     **4.4** |                  6.6 |                   6.8 |        32.4 |
+| Kazakh  | Internal | <u>18.8</u> |    **15.8** |                 32.2 |                  62.9 |        65.2 |
+| Kyrgyz  | CV       | <u>12.5</u> |    **10.2** |                 21.6 |                  14.3 |        95.2 |
+| Kyrgyz  | FLEURS   |  <u>7.0</u> |     **5.5** |                  8.1 |                   9.5 |        86.3 |
+| Kyrgyz  | Internal | <u>11.1</u> |     **9.8** |                 25.0 |                  78.3 |       102.2 |
+| Uzbek   | CV       | <u>11.3</u> |     **9.2** |                 32.8 |                  25.1 |       109.9 |
+| Uzbek   | FLEURS   | <u>10.0</u> |     **7.3** |                 15.4 |                  11.9 |       105.4 |
+| Uzbek   | Internal | <u>13.8</u> |    **12.7** |                 30.2 |                  40.0 |       120.6 |
 
 ## End-to-end ASR
 

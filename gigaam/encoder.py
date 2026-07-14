@@ -263,13 +263,13 @@ class RotaryPositionMultiHeadAttention(MultiHeadAttention):
             scores = scores.view(b, -1, self.h * self.d_k)
             return self.linear_out(scores)
         elif self.torch_sdpa_attn:
-            attn_mask = None if mask is None else ~mask.unsqueeze(1)
-            attn_output = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=attn_mask,
-            )
+            attn_mask = None
+            if mask is not None:
+                attn_mask = ~mask.unsqueeze(1)
+                # SDPA masks padding queries with true -inf; softmax over such a row is NaN in forward and backward.
+                # Unmask such rows entirely: their output is finite garbage that nothing reads.
+                attn_mask = attn_mask | (~attn_mask.any(dim=-1, keepdim=True))
+            attn_output = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
             attn_output = attn_output.transpose(1, 2).reshape(b, t, self.h * self.d_k)
             return self.linear_out(attn_output)
         else:
