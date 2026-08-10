@@ -199,19 +199,35 @@ class GigaAMASR(GigaAM):
         word_timestamps: bool = False,
         fr_batch_size: int = 16,
         fr_num_workers: int = 0,
+        vad_backend: str = "pyannote",
         **kwargs,
     ) -> LongformTranscriptionResult:
         """
         Transcribes a long audio file by splitting it into segments and
         then transcribing each segment (batched inference via AudioDataset).
         Use fr_batch_size and fr_num_workers to control the batched inference.
+        Speech segmentation uses the pyannote VAD pipeline by default;
+        pass vad_backend="silero" to segment with Silero VAD instead.
         Returns LongformTranscriptionResult with segments containing optional word-level timestamps.
         """
-        from .vad_utils import segment_audio_file
+        match vad_backend:
+            case "pyannote":
+                from .vad_utils import segment_audio_file as segment_with_pyannote
 
-        segments, boundaries = segment_audio_file(
-            wav_file, SAMPLE_RATE, device=self._device, **kwargs
-        )
+                segments, boundaries = segment_with_pyannote(
+                    wav_file, SAMPLE_RATE, device=self._device, **kwargs
+                )
+            case "silero":
+                from .silero_vad_utils import segment_audio_file as segment_with_silero
+
+                segments, boundaries = segment_with_silero(
+                    wav_file, SAMPLE_RATE, **kwargs
+                )
+            case _:
+                raise ValueError(
+                    f"Unknown vad_backend {vad_backend!r}, "
+                    f"expected 'pyannote' or 'silero'."
+                )
 
         if not segments:
             return LongformTranscriptionResult(segments=[])
