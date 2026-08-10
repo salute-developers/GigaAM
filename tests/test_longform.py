@@ -1,6 +1,7 @@
 import logging
 import os
 import tempfile
+from difflib import SequenceMatcher
 from typing import List, Tuple
 
 import numpy as np
@@ -223,6 +224,68 @@ def test_segmentation_edge_cases():
         finally:
             if os.path.exists(f.name):
                 os.remove(f.name)
+
+
+def test_segmentation_silero_backend():
+    """Test Silero VAD segmentation on real speech, no HF token required"""
+    pytest.importorskip("silero_vad")
+    from gigaam.silero_vad_utils import segment_audio_file
+
+    audio_path = download_long_audio()
+    info = sf.info(audio_path)
+    duration = info.frames / info.samplerate
+
+    segments, boundaries = segment_audio_file(audio_path, sr=16000)
+
+    assert segments, "Silero VAD should detect speech in the sample audio"
+    assert len(segments) == len(boundaries), "Segments and boundaries count mismatch"
+    validation = validate_segmentation_boundaries(boundaries, duration)
+    assert validation["valid"], f"Boundary validation failed: {validation['issues']}"
+
+    logger.info(f"Silero segmentation: {len(segments)} segments for {duration:.1f}s")
+
+
+def test_transcribe_longform_unknown_backend():
+    """Test that an unknown VAD backend raises a clear error"""
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        try:
+            audio = generate_long_audio(duration=1.0)
+            sf.write(f.name, audio, 16000)
+
+            model = gigaam.load_model("v3_ctc")
+            with pytest.raises(ValueError, match="vad_backend"):
+                model.transcribe_longform(f.name, vad_backend="unknown")
+
+        finally:
+            if os.path.exists(f.name):
+                os.remove(f.name)
+
+
+@pytest.mark.parametrize("revision", ["v3_ctc"])
+def test_transcribe_longform_silero(revision):
+    """Test longform transcription with the Silero VAD backend"""
+    pytest.importorskip("silero_vad")
+    from gigaam.types import LongformTranscriptionResult
+
+    model = gigaam.load_model(revision)
+    result = model.transcribe_longform(download_long_audio(), vad_backend="silero")
+
+    assert isinstance(
+        result, LongformTranscriptionResult
+    ), "Should return LongformTranscriptionResult"
+    assert result.segments, "Should produce at least one segment"
+    for segment in result.segments:
+        assert 0 < segment.end - segment.start <= 30.0, "Segment duration out of range"
+
+    # Chunk boundaries differ between VADs, so compare the merged text instead
+    # of per-segment predictions
+    joined = " ".join(segment.text for segment in result.segments)
+    reference = " ".join(ref["transcription"] for ref in _predictions[revision])
+    similarity = SequenceMatcher(None, joined.lower(), reference.lower()).ratio()
+    assert similarity > 0.9, (
+        f"Transcription diverged from pyannote-based reference: "
+        f"similarity={similarity:.3f}"
+    )
 
 
 if __name__ == "__main__":

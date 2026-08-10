@@ -54,6 +54,7 @@ tests = [
     "pytest",
     "pytest-cov",
     "scipy",
+    "silero-vad==6.2.*",
 ]
 lint = [
     "black==26.1.0",
