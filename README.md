@@ -74,7 +74,7 @@ For detailed results, see [here](./evaluation.md).
 
 ### Model inference
 
-**Note:** ASR with `.transcribe` function is applicable for audio **only up to 25 seconds**. To enable `.transcribe_longform` install the additional [pyannote.audio](https://github.com/pyannote/pyannote-audio) dependencies
+**Note:** ASR with `.transcribe` function is applicable for audio **only up to 25 seconds**. To enable `.transcribe_longform` install the additional [pyannote.audio](https://github.com/pyannote/pyannote-audio) dependencies or the [Silero VAD](https://github.com/snakers4/silero-vad) backend
 
 <details>
 <summary>Longform setup instruction</summary>
@@ -88,6 +88,8 @@ pip install -e ".[longform]"
 pip install -e ".[tests]"
 HF_TOKEN=<your hf token> pytest -v tests/test_longform.py
 ```
+
+Alternatively, install the [Silero VAD](https://github.com/snakers4/silero-vad) backend (`pip install -e ".[torch,silero]"`, weights ship inside the package) and pass `vad_backend="silero"` to `transcribe_longform`.
 </details>
 
 <br>
