@@ -60,20 +60,30 @@ class CTCGreedyDecoding:
         encoded: Tensor,
         lengths: Tensor,
         states=None,
+        *,
+        token_logprobs: Optional[List[List[float]]] = None,
     ) -> List[Tuple[str, List[int], List[int]]]:
         """
         CTC greedy decode: returns (text, token_ids, token_frames) per sample.
         Token frames are time indices (0..T-1) where a token is emitted.
+        If provided, append one list of emitted-token log-probabilities per sample.
         """
         log_probs = head(encoder_output=encoded)
         if log_probs.ndim == 2:
+            if token_logprobs is not None:
+                raise ValueError("CTC labels alone have no token log-probabilities")
             return self.decode_labels(log_probs, lengths, states)
         C = log_probs.shape[-1]
         assert (
             C == len(self.tokenizer) + 1
         ), f"Num classes {C} != len(vocab)+1 {len(self.tokenizer) + 1}"
-        labels = log_probs.argmax(dim=-1)
-        return self.decode_labels(labels, lengths, states)
+        if token_logprobs is None:
+            return self.decode_labels(log_probs.argmax(dim=-1), lengths, states)
+        scores, labels = log_probs.max(dim=-1)
+        decoded = self.decode_labels(labels, lengths, states)
+        for row, (_, _, frames) in zip(scores.cpu(), decoded):
+            token_logprobs.append(row[frames].tolist())
+        return decoded
 
     def decode_labels(self, labels: Tensor, lengths: Tensor, states=None):
         labels = labels.cpu()
@@ -154,10 +164,13 @@ class RNNTGreedyDecoding:
         encoded: Tensor,
         enc_len: Tensor,
         states=None,
+        *,
+        token_logprobs: Optional[List[List[float]]] = None,
     ) -> List[Tuple[str, List[int], List[int]]]:
         """
         RNN-T greedy decode: returns (text, token_ids, token_frames) per sample.
         Token frames are encoder time indices where tokens are emitted.
+        If provided, append one list of emitted-token log-probabilities per sample.
         """
         x = encoded.transpose(1, 2)  # [B, T, D]
         B, T, _ = x.shape
@@ -165,6 +178,9 @@ class RNNTGreedyDecoding:
 
         hyps: List[List[int]] = [[] for _ in range(B)]
         token_frames: List[List[int]] = [[] for _ in range(B)]
+        emitted_scores: List[List[float]] = (
+            [[] for _ in range(B)] if token_logprobs is not None else []
+        )
         last_label = (
             [state.previous for state in states] if states is not None else [None] * B
         )
@@ -220,8 +236,14 @@ class RNNTGreedyDecoding:
             frames = (start[:, None] + offsets).clamp_max(T - 1)
             features = x[rows[:, None], frames]
             predicted = torch.cat([prediction[i] for i in active])
-            labels = head.joint.joint(features, predicted)[:, :, 0, :].argmax(-1)
-            for i, labels_row in zip(active, labels.tolist()):
+            log_probs = head.joint.joint(features, predicted)[:, :, 0, :]
+            if token_logprobs is None:
+                labels = log_probs.argmax(-1)
+            else:
+                values, labels = log_probs.max(dim=-1)
+                window_scores = values.tolist()
+            del log_probs
+            for row, (i, labels_row) in enumerate(zip(active, labels.tolist())):
                 count = min(window, limits[i] - positions[i])
                 for delta, token in enumerate(labels_row[:count]):
                     if token != self.blank_id:
@@ -234,6 +256,8 @@ class RNNTGreedyDecoding:
                 repeats[i] = 1 if delta else repeats[i] + 1
                 hyps[i].append(token)
                 token_frames[i].append(positions[i])
+                if token_logprobs is not None:
+                    emitted_scores[i].append(window_scores[row][delta])
                 last_label[i] = token
                 dec_state[i] = prediction_hidden[i]
                 prediction[i] = prediction_hidden[i] = None
@@ -254,4 +278,6 @@ class RNNTGreedyDecoding:
                 state.prediction = prediction[index]
                 state.prediction_hidden = prediction_hidden[index]
                 state.frame_offset += int(enc_len[index])
+        if token_logprobs is not None:
+            token_logprobs.extend(emitted_scores)
         return [(self.tokenizer.decode(h), h, tf) for h, tf in zip(hyps, token_frames)]

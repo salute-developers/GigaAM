@@ -85,9 +85,9 @@ jobs:
       run: |
         pytest -v tests/test_onnx.py tests/test_encoder_variants.py tests/test_streaming.py tests/test_language.py --tb=short
 
-    - name: Run timestamps tests
+    - name: Run timestamps and confidence tests
       run: |
-        pytest -v tests/test_timestamps.py --tb=short
+        pytest -v tests/test_timestamps.py tests/test_confidence.py --tb=short
 
     - name: Run training tests
       run: |

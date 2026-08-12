@@ -58,18 +58,92 @@ def test_streaming_rejects_unsupported_frontend(kwargs, message):
         GigaAMStreaming(tiny_model(**kwargs), 160)
 
 
-def test_transcribe_rejects_long_audio_for_single_and_dual_heads(tmp_path):
-    single = tiny_model()
+def dual_model(single):
     cfg = single.cfg.copy()
     cfg.heads = {name: cfg.head for name in ("e2e", "raw")}
     cfg.decodings = {name: cfg.decoding for name in cfg.heads}
-    models = (single, GigaAMDualASR(cfg).eval())
+    return GigaAMDualASR(cfg).eval()
+
+
+def test_transcribe_rejects_long_audio_for_single_and_dual_heads(tmp_path):
+    single = tiny_model()
+    models = (single, dual_model(single))
     audio = tmp_path / "long.wav"
     sf.write(audio, np.zeros(30 * 16000 + 1, dtype=np.float32), 16000)
 
     for model in models:
         with pytest.raises(ValueError, match="transcribe_longform"):
             model.transcribe(str(audio))
+
+
+@pytest.mark.parametrize("dual", [False, True])
+@pytest.mark.parametrize("timestamps", [False, True])
+def test_offline_confidence(tmp_path, monkeypatch, dual, timestamps):
+    model = tiny_model()
+    if dual:
+        model = dual_model(model)
+    heads = model.heads if dual else {"e2e": model.head}
+    expected = {}
+    for i, (name, head) in enumerate(heads.items()):
+        # Distinct, constant posteriors let us check that each head keeps its score.
+        conv = head.decoder_layers[0]
+        with torch.no_grad():
+            conv.weight.zero_()
+            conv.bias.zero_()
+            conv.bias[2 * i] = i + 1
+        expected[name] = conv.bias.softmax(0).max().item()
+    wave = torch.zeros(1600)
+    path = str(tmp_path / "short.wav")
+    sf.write(path, wave.numpy(), 16000)
+    boundaries = [(0.0, 0.03), (0.05, 0.08)]
+    monkeypatch.setattr(
+        "gigaam.vad_utils.segment_audio_file",
+        lambda *args, **kwargs: ([wave[:480], wave[800:1280]], boundaries),
+    )
+    for options in ({}, {"return_confidence": True}):
+        short = model.transcribe(path, word_timestamps=timestamps, **options)
+        long = model.transcribe_longform(path, word_timestamps=timestamps, **options)
+        for name, probability in expected.items():
+            utterance = short[name] if dual else short
+            segments = (long[name] if dual else long).segments
+            assert [(s.start, s.end) for s in segments] == boundaries
+            score = pytest.approx(probability) if options else None
+            for item, start in zip([utterance, *segments], [0.0, 0.0, 0.05]):
+                assert item.text == ("b" if name == "raw" else "a")
+                assert item.confidence == score
+                if timestamps:
+                    (word,) = item.words
+                    assert word.confidence == score and word.start == start
+                    assert word.end > word.start
+                else:
+                    assert item.words is None
+
+
+@pytest.mark.parametrize("timestamps", [False, True])
+def test_stream_confidence_for_new_tokens(timestamps):
+    stream = GigaAMStreaming(
+        tiny_model(), 160, word_timestamps=timestamps, return_confidence=True
+    )
+    wave = torch.randn(1171)
+    pieces = [stream.transcribe_partial(packet) for packet in wave.split(37)]
+    pieces.append(stream.flush())
+    scores = stream.decoder_state.token_logprobs
+    offset = 0
+    assert sum(bool(p.text) for p in pieces) > 1
+    for piece in pieces:
+        # In this character tokenizer every published character is one token.
+        end = offset + len(piece.text)
+        expected = (
+            pytest.approx(np.exp(np.mean(scores[offset:end]))) if piece.text else None
+        )
+        assert piece.confidence == expected
+        offset = end
+    assert offset == len(scores) and stream.flush().confidence is None
+    stream.reset_state()
+    assert stream.decoder_state.token_logprobs == []
+    assert stream.transcribe_partial(wave, final=True).confidence == pytest.approx(
+        np.exp(np.mean(scores))
+    )
 
 
 @pytest.mark.parametrize("before", [True, False])
@@ -184,6 +258,29 @@ def tiny_rnnt_head():
         )
         head.joint.joint_net[1].bias.zero_()
     return head
+
+
+@pytest.mark.parametrize("windowed", [True, False])
+def test_rnnt_scores_follow_emissions(windowed):
+    head = tiny_rnnt_head()
+    head.joint.supports_frame_windows = windowed
+    decoder = RNNTGreedyDecoding(["a", " "], max_symbols_per_step=2)
+    signal = torch.tensor(
+        [[-2.0, -2.0, 1.0, -2.0, -2.0, 3.0], [4.0, -2.0, -2.0, 2.0, -2.0, 3.0]]
+    )
+    encoded = torch.stack((signal, -signal), dim=1)
+    lengths = torch.tensor([6, 4])
+    scores = []
+    result = decoder.decode(head, encoded, lengths, token_logprobs=scores)
+    assert result == decoder.decode(head, encoded, lengths)
+    assert [item[2] for item in result] == [[2, 2, 5, 5], [0, 0, 3, 3]]
+    # The fixture's joint is independent of prediction history. Each active
+    # frame emits "a" twice before the symbol cap advances the decoder.
+    for row, frames in enumerate(([2, 2, 5, 5], [0, 0, 3, 3])):
+        features = encoded[row : row + 1].transpose(1, 2)
+        prediction = torch.zeros(1, 1, 2)
+        frame_scores = head.joint.joint(features, prediction)[0, :, 0, 0]
+        assert scores[row] == pytest.approx(frame_scores[frames].detach().tolist())
 
 
 def test_rnnt_predictor_cache_mixed_rows_and_packets():

@@ -265,6 +265,7 @@ def load_model(
     future_context_ms: Optional[int] = None,
     language=None,
     word_timestamps: bool = False,
+    return_confidence: bool = False,
 ) -> Union[GigaAM, GigaAMVAD, "GigaAMStreaming"]:
     """
     Load the GigaAM model by name, or a local ``.ckpt`` from fine-tuning with ``train_utils/train.py``.
@@ -282,10 +283,15 @@ def load_model(
         The device to load the model onto. Defaults to "cuda" if available, otherwise "cpu".
     download_root : Optional[str]
         The directory to download the model to. Defaults to "~/.cache/gigaam".
+    return_confidence : bool
+        Include confidence for newly published text in PyTorch streaming results.
+        With word_timestamps, each completed word also carries its own score.
     """
     if streaming:
         model = load_model(model_name, fp16_encoder, use_flash, device, download_root)
-        return GigaAMStreaming(model, future_context_ms, language, word_timestamps)
+        return GigaAMStreaming(
+            model, future_context_ms, language, word_timestamps, return_confidence
+        )
     # Normalize device parameter to torch.device.
     device_obj = torch.device(
         device or ("cuda" if torch.cuda.is_available() else "cpu")

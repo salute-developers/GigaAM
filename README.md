@@ -124,6 +124,26 @@ emotion2prob = model.get_probs(audio_path)
 print(", ".join([f"{emotion}: {prob:.3f}" for emotion, prob in emotion2prob.items()]))
 ```
 
+#### Confidence scores (native PyTorch)
+
+Pass `return_confidence=True` to score a short utterance or each long-form segment. Add `word_timestamps=True` for per-word scores. Models v1–v3 return a single result. In v4 each head scores its own transcript.
+
+```python
+model = gigaam.load_model("v4_rnnt")
+short = model.transcribe(
+    audio_path, return_confidence=True, word_timestamps=True
+)
+print(short["e2e"].confidence)
+for word in short["e2e"].words:
+    print(word.text, word.confidence)
+
+long = model.transcribe_longform(long_audio_path, return_confidence=True)
+for segment in long["e2e"].segments:
+    print(segment.text, segment.confidence)
+```
+
+The score is the geometric mean of the probabilities of non-blank tokens emitted by the greedy decoder. It can help rank passages for review. It is uncalibrated, so even a high-scoring word can be wrong. The field is `None` when scoring is off or there are no emitted tokens.
+
 ### Model Fine-tuning
 
 CTC, RNNT, and SSL models can be fine-tuned on custom data using PyTorch Lightning. For a detailed description of all training arguments, see [`train_utils/README.md`](./train_utils/README.md). End-to-end examples with different VRAM constraints are available in [`train_utils/example.ipynb`](./train_utils/example.ipynb).
