@@ -18,12 +18,14 @@ class Word:
     text: str
     start: float
     end: float
+    confidence: Optional[float] = None
 
 
 @dataclass
 class TranscriptionResult:
     text: str
     words: Optional[List[Word]] = None
+    confidence: Optional[float] = None
 
     def __str__(self) -> str:
         return self.text
@@ -35,6 +37,7 @@ class Segment:
     start: float
     end: float
     words: Optional[List[Word]] = None
+    confidence: Optional[float] = None
 
 
 @dataclass

@@ -117,6 +117,12 @@ result = model.transcribe(audio_path, word_timestamps=True)
 for word in result.words:
     print(f"  [{word.start:.2f} - {word.end:.2f}] {word.text}")
 
+# Greedy decoding also reports how confident it was
+result = model.transcribe(audio_path, word_timestamps=True)
+print(f"utterance confidence: {result.confidence:.3f}")
+for word in sorted(result.words, key=lambda w: w.confidence)[:5]:
+    print(f"  least confident: {word.text!r} ({word.confidence:.3f})")
+
 # and long-form ASR
 import os
 os.environ["HF_TOKEN"] = <HF_TOKEN with read access to "pyannote/segmentation-3.0">
@@ -129,6 +135,50 @@ model = gigaam.load_model("emo")
 emotion2prob = model.get_probs(audio_path)
 print(", ".join([f"{emotion}: {prob:.3f}" for emotion, prob in emotion2prob.items()]))
 ```
+
+### Decoding Confidence
+
+Greedy decoding reports the log-probability of every token it emits, aggregated
+into a confidence score in `(0, 1]`:
+
+| Field | Meaning |
+|---|---|
+| `TranscriptionResult.confidence` | whole utterance |
+| `Segment.confidence` | one long-form segment |
+| `Word.confidence` | one word (needs `word_timestamps=True`) |
+
+The score is the length-normalized geometric mean `exp(mean(log p))` of the
+tokens the word was built from, so long words are not penalized for consisting
+of more tokens. Only emitted tokens count — blank decisions are excluded. The
+underlying per-token values are also available on the decoder output as
+`Hypothesis.token_logprobs`.
+
+Computing this is free: greedy decoding already takes an `argmax` over the same
+log-softmax distribution, so it now takes a `max` and keeps both the index and
+the value.
+
+**What the score is good for.** It tracks acoustic difficulty. On the bundled
+`example.wav`, burying the speech in white noise at 0 dB SNR drops utterance
+confidence from `0.911` to `0.805` for `v3_e2e_rnnt` and from `0.991` to `0.870`
+for `v3_ctc`. Within a clean recording, the low tail is where the model was
+genuinely unsure — on a 24-minute Russian tech talk (3022 words), words the
+model tried to spell in Latin scored a median of `0.73` against `0.96` for the
+transcript as a whole, and the outright garbled ones landed in the bottom 4%:
+`SGAG` `0.57`, `Woldpoot` `0.60`, `Impoot` `0.62`.
+
+**What it is not.** This is a greedy per-token posterior, not a calibrated
+probability of being correct, and RNN-T greedy scores are known to be
+over-confident. Two limits show up in practice:
+
+- Confidently wrong output still scores high. In the same recording *guardrail*
+  came out transliterated as `гардрейл` (`0.81`, 18th percentile) and
+  `квартрейл` (`0.85`, 24th percentile) — wrong, but nowhere near the tail.
+- A low score does not imply an error. The bottom of the distribution is
+  dominated by short function words at segment boundaries (`и`, `не`, `я`),
+  which are usually transcribed correctly.
+
+Treat it as one signal among several — useful for ranking, routing to a second
+pass, or flagging spans for review, not as a standalone error detector.
 
 ### Model Fine-tuning
 
