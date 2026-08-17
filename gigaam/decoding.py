@@ -1,10 +1,39 @@
-from typing import List, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 import torch
 from sentencepiece import SentencePieceProcessor
 from torch import Tensor
 
 from .decoder import CTCHead, RNNTHead
+
+
+class Hypothesis(NamedTuple):
+    """
+    A single decoded hypothesis.
+
+    Keeps the positional layout of the former
+    ``(text, token_ids, token_frames)`` return value — indexing and slicing are
+    unchanged — and appends the log-probability of every emitted token. Code
+    that unpacks exactly three values needs to read the fields by name instead.
+
+    Attributes
+    ----------
+    text:
+        Decoded text.
+    token_ids:
+        Emitted token ids (blanks excluded).
+    token_frames:
+        Encoder time index each token was emitted at.
+    token_logprobs:
+        ``log P(token)`` of each emitted token, taken from the same
+        log-softmax distribution the greedy argmax is taken from. Blank
+        decisions are not included.
+    """
+
+    text: str
+    token_ids: List[int]
+    token_frames: List[int]
+    token_logprobs: List[float]
 
 
 class Tokenizer:
@@ -59,9 +88,9 @@ class CTCGreedyDecoding:
         head: "CTCHead",
         encoded: Tensor,
         lengths: Tensor,
-    ) -> List[Tuple[str, List[int], List[int]]]:
+    ) -> List[Hypothesis]:
         """
-        CTC greedy decode: returns (text, token_ids, token_frames) per sample.
+        CTC greedy decode: returns a Hypothesis per sample.
         Token frames are time indices (0..T-1) where a token is emitted.
         """
         log_probs = head(encoder_output=encoded)
@@ -69,7 +98,9 @@ class CTCGreedyDecoding:
         assert (
             C == len(self.tokenizer) + 1
         ), f"Num classes {C} != len(vocab)+1 {len(self.tokenizer) + 1}"
-        labels = log_probs.argmax(dim=-1)
+        best = log_probs.max(dim=-1)
+        labels = best.indices
+        token_scores = best.values.float()
 
         B, T = labels.shape
         device = labels.device
@@ -85,14 +116,21 @@ class CTCGreedyDecoding:
         batch_idx = idx[:, 0]
         token_frames_flat = idx[:, 1]
         token_ids_flat = labels[skip_mask]
+        token_logprobs_flat = token_scores[skip_mask]
 
         counts = torch.bincount(batch_idx, minlength=B).cpu().tolist()
         ids_splits = token_ids_flat.cpu().split(counts)
         fr_splits = token_frames_flat.cpu().split(counts)
+        lp_splits = token_logprobs_flat.cpu().split(counts)
 
         return [
-            (self.tokenizer.decode(ids.tolist()), ids.tolist(), fr.tolist())
-            for ids, fr in zip(ids_splits, fr_splits)
+            Hypothesis(
+                self.tokenizer.decode(ids.tolist()),
+                ids.tolist(),
+                fr.tolist(),
+                lp.tolist(),
+            )
+            for ids, fr, lp in zip(ids_splits, fr_splits, lp_splits)
         ]
 
 
@@ -131,9 +169,9 @@ class RNNTGreedyDecoding:
         head: "RNNTHead",
         encoded: Tensor,
         enc_len: Tensor,
-    ) -> List[Tuple[str, List[int], List[int]]]:
+    ) -> List[Hypothesis]:
         """
-        RNN-T greedy decode: returns (text, token_ids, token_frames) per sample.
+        RNN-T greedy decode: returns a Hypothesis per sample.
         Token frames are encoder time indices where tokens are emitted.
         """
         x = encoded.transpose(1, 2)  # [B, T, D]
@@ -142,6 +180,7 @@ class RNNTGreedyDecoding:
 
         hyps: List[List[int]] = [[] for _ in range(B)]
         token_frames: List[List[int]] = [[] for _ in range(B)]
+        token_logprobs: List[List[float]] = [[] for _ in range(B)]
         last_label: List[Optional[Tensor]] = [None] * B
         dec_state: List[Optional[Tuple[Tensor, Tensor]]] = [None] * B
 
@@ -159,7 +198,11 @@ class RNNTGreedyDecoding:
                     labels, state, batch_size=len(batch_idx)
                 )
 
-            k = head.joint.joint(f, g)[:, 0, 0, :].argmax(dim=-1)  # [b]
+            # log-softmax over the joint output; max gives the greedy token and
+            # its log-probability in one pass, so confidence costs nothing.
+            best = head.joint.joint(f, g)[:, 0, 0, :].max(dim=-1)  # [b]
+            k = best.indices
+            scores = best.values.float()
             emit = k.ne(self.blank_id)
 
             if not emit.any():
@@ -174,6 +217,7 @@ class RNNTGreedyDecoding:
 
                 hyps[bi].append(tok)
                 token_frames[bi].append(t)
+                token_logprobs[bi].append(float(scores[p]))
                 last_label[bi] = k[p : p + 1].view(1, 1)
                 dec_state[bi] = hidden_parts[p]
                 out.append(bi)
@@ -204,4 +248,7 @@ class RNNTGreedyDecoding:
 
                 active = next_active
 
-        return [(self.tokenizer.decode(h), h, tf) for h, tf in zip(hyps, token_frames)]
+        return [
+            Hypothesis(self.tokenizer.decode(h), h, tf, lp)
+            for h, tf, lp in zip(hyps, token_frames, token_logprobs)
+        ]

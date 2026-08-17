@@ -99,28 +99,30 @@ class GigaAMASR(GigaAM):
         encoded_len: Tensor,
         wav_lens: Tensor,
         word_timestamps: bool = False,
-    ) -> List[Tuple[str, Optional[List[Word]]]]:
-        decoded = self.decoding.decode(self.head, encoded, encoded_len)
-        if not word_timestamps:
-            return [(t, None) for t, _, _ in decoded]
-        from .timestamps_utils import compute_frame_shift, frames_to_words
+    ) -> List[Tuple[str, Optional[List[Word]], Optional[float]]]:
+        from .timestamps_utils import (
+            aggregate_confidence,
+            compute_frame_shift,
+            frames_to_words,
+        )
 
-        out: List[Tuple[str, Optional[List[Word]]]] = []
-        for i, (text, token_ids, token_frames) in enumerate(decoded):
-            frame_shift = compute_frame_shift(
-                int(wav_lens[i].item()), int(encoded_len[i].item())
-            )
-            out.append(
-                (
-                    text,
-                    frames_to_words(
-                        self.decoding.tokenizer,
-                        token_ids,
-                        token_frames,
-                        frame_shift,
-                    ),
+        decoded = self.decoding.decode(self.head, encoded, encoded_len)
+
+        out: List[Tuple[str, Optional[List[Word]], Optional[float]]] = []
+        for i, hyp in enumerate(decoded):
+            words: Optional[List[Word]] = None
+            if word_timestamps:
+                frame_shift = compute_frame_shift(
+                    int(wav_lens[i].item()), int(encoded_len[i].item())
                 )
-            )
+                words = frames_to_words(
+                    self.decoding.tokenizer,
+                    hyp.token_ids,
+                    hyp.token_frames,
+                    frame_shift,
+                    hyp.token_logprobs,
+                )
+            out.append((hyp.text, words, aggregate_confidence(hyp.token_logprobs)))
         return out
 
     @torch.inference_mode()
@@ -136,8 +138,10 @@ class GigaAMASR(GigaAM):
             raise ValueError("Too long wav file, use 'transcribe_longform' method.")
 
         encoded, encoded_len = self.forward(wav, length)
-        text, words = self._decode(encoded, encoded_len, length, word_timestamps)[0]
-        return TranscriptionResult(text=text, words=words)
+        text, words, confidence = self._decode(
+            encoded, encoded_len, length, word_timestamps
+        )[0]
+        return TranscriptionResult(text=text, words=words, confidence=confidence)
 
     def forward_for_export(
         self, features: Tensor, feature_lengths: Tensor
@@ -231,7 +235,7 @@ class GigaAMASR(GigaAM):
             wav_pad = wav_pad.to(self._device).to(self._dtype)
             wav_lens = wav_lens.to(self._device)
             encoded, encoded_len = self.forward(wav_pad, wav_lens)
-            for text, words in self._decode(
+            for text, words, confidence in self._decode(
                 encoded, encoded_len, wav_lens, word_timestamps
             ):
                 seg_start, seg_end = boundaries[idx]
@@ -247,14 +251,21 @@ class GigaAMASR(GigaAM):
                                     text=w.text,
                                     start=round(w.start + seg_start, 3),
                                     end=round(w.end + seg_start, 3),
+                                    confidence=w.confidence,
                                 )
                                 for w in words or []
                             ],
+                            confidence=confidence,
                         )
                     )
                 else:
                     result_segments.append(
-                        Segment(text=text, start=seg_start, end=seg_end)
+                        Segment(
+                            text=text,
+                            start=seg_start,
+                            end=seg_end,
+                            confidence=confidence,
+                        )
                     )
         return LongformTranscriptionResult(segments=result_segments)
 

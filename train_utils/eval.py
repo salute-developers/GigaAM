@@ -56,13 +56,13 @@ def main():
     with torch.inference_mode():
         for wav_pad, wav_lens in tqdm(dl, desc="Inference", disable=args.disable_tqdm):
             enc, enc_len = model(wav_pad.to(args.device), wav_lens.to(args.device))
-            for txt, _, _ in model.decoding.decode(model.head, enc, enc_len):
+            for hyp in model.decoding.decode(model.head, enc, enc_len):
                 s = samples[idx]
                 preds.append(
                     {
                         "audio_filepath": s.item,
                         "text": s.text or "",
-                        "pred_text": txt,
+                        "pred_text": hyp.text,
                         "duration": s.duration,
                     }
                 )
