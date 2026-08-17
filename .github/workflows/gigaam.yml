@@ -9,6 +9,8 @@ on:
 
 env:
   FORCE_COLOR: 1
+  # Repository secrets are unavailable to fork pull requests.
+  RUN_HF_TOKEN_TESTS: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
 jobs:
   test:
@@ -72,8 +74,13 @@ jobs:
     - name: Run batching tests
       run: |
         pytest -v tests/test_batching.py --tb=short
+
+    - name: Run VAD utility tests
+      run: |
+        pytest -v tests/test_vad_utils.py --tb=short
     
     - name: Run longform tests
+      if: env.RUN_HF_TOKEN_TESTS == 'true'
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
@@ -85,9 +92,19 @@ jobs:
 
     - name: Run timestamps tests
       run: |
-        pytest -v tests/test_timestamps.py --tb=short
+        pytest -v tests/test_timestamps.py -k "not transcribe_longform" --tb=short
+
+    - name: Run longform timestamps tests
+      if: env.RUN_HF_TOKEN_TESTS == 'true'
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      run: |
+        pytest -v tests/test_timestamps.py -k "transcribe_longform" --tb=short
 
     - name: Run training tests
+      if: env.RUN_HF_TOKEN_TESTS == 'true'
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
         pytest -v tests/test_training.py --tb=short
 

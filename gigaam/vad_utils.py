@@ -78,6 +78,19 @@ def get_pipeline(
     return _PIPELINE.to(device)
 
 
+def _apply_pipeline(pipeline: Pipeline, audio_file):
+    """
+    Applies PyAnnote pipeline to a preloaded waveform dict.
+
+    GigaAM already decodes the audio for ASR chunk slicing. Reusing the same
+    waveform for VAD avoids depending on pyannote/torchcodec path decoding and
+    keeps VAD boundaries aligned with the samples later sliced for ASR.
+    """
+    if hasattr(pipeline, "prepare_one") and hasattr(pipeline, "apply"):
+        return pipeline.apply(pipeline.prepare_one(audio_file, preload=False))
+    return pipeline(audio_file)
+
+
 def segment_audio_file(
     wav_file: str,
     sr: int,
@@ -92,9 +105,10 @@ def segment_audio_file(
     The segmentation is performed using a PyAnnote voice activity detection pipeline.
     """
 
-    audio = load_audio(wav_file)
+    audio = load_audio(wav_file, sample_rate=sr)
     pipeline = get_pipeline(device)
-    sad_segments = cast(Annotation, pipeline(wav_file))
+    sad_input = {"waveform": audio.unsqueeze(0), "sample_rate": sr}
+    sad_segments = cast(Annotation, _apply_pipeline(pipeline, sad_input))
 
     segments: List[torch.Tensor] = []
     curr_duration = 0.0
