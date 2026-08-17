@@ -40,6 +40,10 @@ longform = [
     "torchcodec==0.10",
     "transformers==5.*",
 ]
+# Alternative VAD for transcribe_longform: no gated models or HF token needed.
+silero = [
+    "silero-vad==6.2.*",
+]
 train = [
     "editdistance",
     "lightning>=2.6",
@@ -50,6 +54,7 @@ tests = [
     "pytest",
     "pytest-cov",
     "scipy",
+    "silero-vad==6.2.*",
 ]
 lint = [
     "black==26.1.0",

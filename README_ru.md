@@ -74,7 +74,7 @@ GigaAM - фундаментальная акустическая модель н
 
 ### Основные функции
 
-**Важно:** функция `.transcribe` для ASR применима только к аудиофайлам **до 25 секунд**. Для использования `.transcribe_longform` необходимо установить дополнительные зависимости [pyannote.audio](https://github.com/pyannote/pyannote-audio).
+**Важно:** функция `.transcribe` для ASR применима только к аудиофайлам **до 25 секунд**. Для использования `.transcribe_longform` необходимо установить дополнительные зависимости [pyannote.audio](https://github.com/pyannote/pyannote-audio) или бэкенд [Silero VAD](https://github.com/snakers4/silero-vad).
 
 <details>
 <summary>Инструкция по настройке распознавания длинных аудио</summary>
@@ -88,6 +88,8 @@ pip install -e ".[longform]"
 pip install -e ".[tests]"
 HF_TOKEN=<ваш hf токен> pytest -v tests/test_longform.py
 ```
+
+Альтернатива — бэкенд [Silero VAD](https://github.com/snakers4/silero-vad) (`pip install -e ".[torch,silero]"`, веса поставляются внутри пакета): передайте `vad_backend="silero"` в `transcribe_longform`.
 </details>
 
 <br>
