@@ -40,6 +40,13 @@ longform = [
     "torchcodec==0.10",
     "transformers==5.*",
 ]
+lm = [
+    # NB: pyctcdecode pins numpy<2, which conflicts with this package's numpy==2.*.
+    # It works fine on numpy 2 in practice, so install it with --no-deps:
+    #   pip install --no-deps pyctcdecode && pip install kenlm
+    "pyctcdecode>=0.5",
+    "kenlm",
+]
 train = [
     "editdistance",
     "lightning>=2.6",

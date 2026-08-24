@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 import torch
+from beam_lm import add_beam_args, maybe_attach
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from utils import compute_wer
@@ -26,11 +27,13 @@ def main():
     p.add_argument("--min_duration", type=float, default=0.0)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--disable_tqdm", action="store_true", default=False)
+    add_beam_args(p)
     args = p.parse_args()
 
     src = args.checkpoint or args.model_name
     assert src, "Pass --checkpoint or --model_name"
     model = gigaam.load_model(src, device=args.device)
+    beam_decoding = maybe_attach(model, args)
 
     ds = AudioDataset(
         args.eval_manifest,
@@ -90,6 +93,9 @@ def main():
         f"WER e2e: {wer_e2e:.2f}% ({e2e_err}/{e2e_w} words)\n"
         f"WER raw: {wer_raw:.2f}% ({raw_err}/{raw_w} words)"
     )
+
+    if beam_decoding is not None:
+        beam_decoding.close()
 
 
 if __name__ == "__main__":

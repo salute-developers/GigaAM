@@ -28,6 +28,15 @@ from gigaam.utils import AudioDataset
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--model_name", required=True)
+    p.add_argument(
+        "--init_from_checkpoint",
+        type=str,
+        default=None,
+        help="Start a FRESH run (new optimizer/schedule/epoch 0) from these weights, "
+        "e.g. a previous-stage checkpoint. Unlike --resume_from_checkpoint this does "
+        "not restore optimizer/scheduler state. --model_name stays the display/filename "
+        "label.",
+    )
     p.add_argument("--train_manifest", required=True)
     p.add_argument("--val_manifest", required=True)
     p.add_argument("--output_dir", default="./checkpoints")
@@ -96,8 +105,15 @@ def main():
     print(f"Experiment: {exp_name}")
     model_dir, tb_dir = prepare_experiment_dirs(args.output_dir, exp_name)
 
-    print(f"Loading pretrained {args.model_name} ...")
-    model = gigaam.load_model(args.model_name, fp16_encoder=False, device="cpu")
+    load_src = args.init_from_checkpoint or args.model_name
+    if args.init_from_checkpoint:
+        print(
+            f"Init weights from {args.init_from_checkpoint} "
+            f"(label: {args.model_name}); fresh optimizer/schedule"
+        )
+    else:
+        print(f"Loading pretrained {args.model_name} ...")
+    model = gigaam.load_model(load_src, fp16_encoder=False, device="cpu")
     ssl_run = False
     if isinstance(model, gigaam.GigaAMASR):
         if args.vocab or args.build_vocab_from_manifest or args.save_vocab:
