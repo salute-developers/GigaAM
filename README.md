@@ -214,3 +214,4 @@ If you use GigaAM in your research, please cite our papers:
 * [[youtube] Как научить LLM слышать: GigaAM 🤝 GigaChat Audio](https://www.youtube.com/watch?v=O7NSH2SAwRc)
 * [[youtube] GigaAM: Семейство акустических моделей для русского языка](https://youtu.be/PvZuTUnZa2Q?t=26442)
 * [[youtube] Speech-only Pre-training: обучение универсального аудиоэнкодера](https://www.youtube.com/watch?v=ktO4Mx6UMNk)
+* [[community] Гига Писарь: локальная диктовка для macOS на GigaAM-v3, распознавание на Swift + ONNX Runtime без PyTorch](https://gigapisar.github.io)
