@@ -19,6 +19,10 @@ Word Error Rate (%) across all validation sets for ASR models:
 
 \* with post-processing applied (removing punctuation and capitalization, replacing numerals, etc.)
 
+### Third-party result archive
+
+A third-party [comparison of GigaAM v3 RNNT and Whisper large-v3 on a fixed 200-utterance Golos Crowd subset](https://github.com/garrrikkotua/gigaam-vs-whisper-russian) publishes normalized references and hypotheses with a dependency-free corpus-WER verifier. The subset was selected deterministically rather than randomly, and the archived reports do not pin immutable model revisions, so its results are not directly comparable with the complete-set numbers above.
+
 ## Multilingual ASR
 
 Word Error Rate (%) is reported on [Common Voice](https://commonvoice.mozilla.org) (CV), [FLEURS](https://huggingface.co/datasets/google/fleurs), and internal in-the-wild test sets. Evaluation protocol: utterances longer than 30 s and references containing digits are excluded; references/hypotheses are normalized (lowercasing, punctuation removal, numerals→words); greedy decoding. Lower is better; best per row in **bold**, second-best <u>underlined</u>.
