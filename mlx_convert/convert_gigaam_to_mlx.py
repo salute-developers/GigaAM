@@ -31,7 +31,8 @@ VOCABULARY_V3 = [
 
 def transpose_conv1d_weight(w: np.ndarray) -> np.ndarray:
     """PyTorch Conv1d: [out, in, kernel] → MLX Conv1d: [out, kernel, in]"""
-    return np.transpose(w, (0, 2, 1))
+    # Safetensors requires contiguous arrays; preserve the transposed view's logical order.
+    return np.ascontiguousarray(np.transpose(w, (0, 2, 1)))
 
 
 def sanitize_weights(state_dict: dict) -> dict:
@@ -153,11 +154,29 @@ def build_config(model_name: str, cfg) -> dict:
             "decoder": cfg_dict["head"]["decoder"],
             "joint": cfg_dict["head"]["joint"],
         }
-        if "vocabulary" in cfg_dict["decoding"]:
+        if "e2e" in model_name:
+            import sentencepiece as spm
+
+            tokenizer_path = os.path.join(
+                os.path.expanduser("~/.cache/gigaam"),
+                f"{model_name}_tokenizer.model",
+            )
+            if not os.path.isfile(tokenizer_path):
+                raise FileNotFoundError(f"E2E SentencePiece tokenizer not found: {tokenizer_path}")
+            tokenizer = spm.SentencePieceProcessor(model_file=tokenizer_path)
+            config["vocabulary"] = [
+                tokenizer.id_to_piece(index) for index in range(tokenizer.get_piece_size())
+            ]
+            config["tokenizer_type"] = "sentencepiece"
+            config["tokenizer_control_token_ids"] = [
+                index for index in range(tokenizer.get_piece_size())
+                if tokenizer.is_control(index)
+            ]
+        elif "vocabulary" in cfg_dict["decoding"]:
             config["vocabulary"] = cfg_dict["decoding"]["vocabulary"]
         else:
             config["vocabulary"] = VOCABULARY_V3
-        # RNNT uses tokenizer
+        # RNNT models use tokenization metadata; E2E needs SentencePiece pieces at runtime.
         config["tokenizer_model"] = "tokenizer.model"
     
     return config

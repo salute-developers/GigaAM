@@ -26,6 +26,9 @@ python convert_gigaam_to_mlx.py --model v3_ctc --output ./gigaam-v3-ctc-mlx
 # RNNT model (higher quality, ~9% lower WER, 48x realtime)
 python convert_gigaam_to_mlx.py --model v3_rnnt --output ./gigaam-v3-rnnt-mlx
 
+# End-to-end RNNT model (SentencePiece output with punctuation/normalization)
+python convert_gigaam_to_mlx.py --model v3_e2e_rnnt --output ./gigaam-v3-e2e-rnnt-mlx
+
 # Optional: fp32 version
 python convert_gigaam_to_mlx.py --model v3_ctc --output ./gigaam-v3-ctc-mlx-fp32 --dtype float32
 ```
