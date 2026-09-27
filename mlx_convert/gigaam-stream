@@ -24,6 +24,10 @@ import signal
 import numpy as np
 import mlx.core as mx
 
+# Every step transcribes a buffer of a new length; without a cap MLX keeps the
+# freed buffers of each shape cached, growing towards most of unified memory.
+mx.set_cache_limit(1 << 30)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MODEL = os.path.join(SCRIPT_DIR, "gigaam-v3-ctc-mlx")
 SAMPLE_RATE = 16000

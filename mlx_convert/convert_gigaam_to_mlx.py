@@ -22,13 +22,6 @@ import numpy as np
 import torch
 from safetensors.numpy import save_file
 
-VOCABULARY_V3 = [
-    " ", "а", "б", "в", "г", "д", "е", "ж", "з", "и", "й", "к", "л", "м",
-    "н", "о", "п", "р", "с", "т", "у", "ф", "х", "ц", "ч", "ш", "щ", "ъ",
-    "ы", "ь", "э", "ю", "я"
-]
-
-
 def transpose_conv1d_weight(w: np.ndarray) -> np.ndarray:
     """PyTorch Conv1d: [out, in, kernel] → MLX Conv1d: [out, kernel, in]"""
     # Safetensors requires contiguous arrays; preserve the transposed view's logical order.
@@ -107,7 +100,7 @@ def sanitize_weights(state_dict: dict) -> dict:
     return mlx_weights
 
 
-def build_config(model_name: str, cfg) -> dict:
+def build_config(model_name: str, cfg, tokenizer) -> dict:
     """Build config.json for the MLX model."""
     from omegaconf import OmegaConf
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
@@ -147,38 +140,35 @@ def build_config(model_name: str, cfg) -> dict:
             "feat_in": cfg_dict["head"].get("feat_in", 768),
             "num_classes": cfg_dict["head"].get("num_classes", 34),
         }
-        config["vocabulary"] = cfg_dict["decoding"].get("vocabulary", VOCABULARY_V3)
     elif "rnnt" in model_name:
         config["head_type"] = "rnnt"
         config["head"] = {
             "decoder": cfg_dict["head"]["decoder"],
             "joint": cfg_dict["head"]["joint"],
         }
-        if "e2e" in model_name:
-            import sentencepiece as spm
 
-            tokenizer_path = os.path.join(
-                os.path.expanduser("~/.cache/gigaam"),
-                f"{model_name}_tokenizer.model",
-            )
-            if not os.path.isfile(tokenizer_path):
-                raise FileNotFoundError(f"E2E SentencePiece tokenizer not found: {tokenizer_path}")
-            tokenizer = spm.SentencePieceProcessor(model_file=tokenizer_path)
-            config["vocabulary"] = [
-                tokenizer.id_to_piece(index) for index in range(tokenizer.get_piece_size())
-            ]
-            config["tokenizer_type"] = "sentencepiece"
-            config["tokenizer_control_token_ids"] = [
-                index for index in range(tokenizer.get_piece_size())
-                if tokenizer.is_control(index)
-            ]
-        elif "vocabulary" in cfg_dict["decoding"]:
-            config["vocabulary"] = cfg_dict["decoding"]["vocabulary"]
-        else:
-            config["vocabulary"] = VOCABULARY_V3
-        # RNNT models use tokenization metadata; E2E needs SentencePiece pieces at runtime.
-        config["tokenizer_model"] = "tokenizer.model"
-    
+    config.update(build_vocabulary(tokenizer))
+    return config
+
+
+def build_vocabulary(tokenizer) -> dict:
+    """Vocabulary for config.json from the PyTorch model's decoding tokenizer.
+
+    Char-wise models store their characters directly. E2E models use
+    SentencePiece: all pieces are exported so the MLX runtime can decode
+    without the sentencepiece package, plus the ids of control tokens that
+    decoding must drop.
+    """
+    if tokenizer.charwise:
+        return {"vocabulary": list(tokenizer.vocab)}
+    sp = tokenizer.model
+    size = sp.get_piece_size()
+    return {
+        "vocabulary": [sp.id_to_piece(i) for i in range(size)],
+        "tokenizer_type": "sentencepiece",
+        "tokenizer_control_token_ids": [i for i in range(size) if sp.is_control(i)],
+        "tokenizer_model": "tokenizer.model",
+    }
     return config
 
 
@@ -213,11 +203,16 @@ def main():
         "float32": np.float32,
     }[args.dtype]
     
-    mlx_weights = {k: v.astype(np_dtype) for k, v in mlx_weights.items()}
+    # The mel filterbank and STFT window are fp32 in the checkpoint and tiny; keep them exact.
+    keep_fp32 = {"mel_filterbank", "stft_window"}
+    mlx_weights = {
+        k: v.astype(np.float32 if k in keep_fp32 else np_dtype) for k, v in mlx_weights.items()
+    }
     
     # Build config
     print("Building config.json...")
-    config = build_config(args.model, model.cfg)
+    tokenizer = model.decoding.tokenizer
+    config = build_config(args.model, model.cfg, tokenizer)
     
     # Save
     os.makedirs(args.output, exist_ok=True)
@@ -231,15 +226,12 @@ def main():
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
     
-    # Copy tokenizer if rnnt
-    if "rnnt" in args.model:
-        import shutil
-        tokenizer_src = os.path.join(os.path.expanduser("~/.cache/gigaam"), 
-                                      f"{args.model}_tokenizer.model")
-        if os.path.exists(tokenizer_src):
-            tokenizer_dst = os.path.join(args.output, "tokenizer.model")
-            shutil.copy2(tokenizer_src, tokenizer_dst)
-            print(f"Copied tokenizer to {tokenizer_dst}")
+    # SentencePiece models: ship the tokenizer next to the weights
+    if not tokenizer.charwise:
+        tokenizer_dst = os.path.join(args.output, "tokenizer.model")
+        with open(tokenizer_dst, "wb") as f:
+            f.write(tokenizer.model.serialized_model_proto())
+        print(f"Saved tokenizer to {tokenizer_dst}")
     
     # Summary
     total_bytes = os.path.getsize(safetensors_path)

@@ -57,6 +57,8 @@ class GigaAMConfig:
     
     # vocabulary
     vocabulary: Optional[List[str]] = None
+    tokenizer_type: Optional[str] = None  # None = char-wise, "sentencepiece" = E2E models
+    tokenizer_control_token_ids: List[int] = field(default_factory=list)
 
     @classmethod
     def from_file(cls, path: str) -> "GigaAMConfig":
@@ -91,6 +93,8 @@ class GigaAMConfig:
             rnnt_pred_hidden=head.get("decoder", {}).get("pred_hidden", 320),
             rnnt_joint_hidden=head.get("joint", {}).get("joint_hidden", 320),
             vocabulary=d.get("vocabulary"),
+            tokenizer_type=d.get("tokenizer_type"),
+            tokenizer_control_token_ids=d.get("tokenizer_control_token_ids", []),
         )
 
 
@@ -373,9 +377,11 @@ class ConformerEncoder(nn.Module):
     def __init__(self, cfg: GigaAMConfig):
         super().__init__()
         self.pre_encode = Conv1dSubsampling(cfg)
+        # Upstream builds RotaryPositionalEmbedding(d_model // n_heads, pos_emb_max_len),
+        # whose second positional parameter is `base`: the RoPE base is 5000, not 10000.
         self.pos_enc = RotaryPositionalEmbedding(
             cfg.d_model // cfg.n_heads,
-            base=10000,
+            base=cfg.pos_emb_max_len,
             max_len=cfg.pos_emb_max_len,
         )
         self.layers = [ConformerLayer(cfg) for _ in range(cfg.n_layers)]
@@ -534,7 +540,15 @@ class GigaAM(nn.Module):
             result.append(label)
             prev = label
 
-        return "".join(vocab[i] for i in result)
+        return self._decode_tokens(result)
+
+    def _decode_tokens(self, token_ids: List[int]) -> str:
+        """Token ids → text. Char-wise vocabularies are joined as is;
+        SentencePiece pieces are decoded like SentencePieceProcessor.decode."""
+        vocab = self.cfg.vocabulary
+        if self.cfg.tokenizer_type != "sentencepiece":
+            return "".join(vocab[i] for i in token_ids)
+        return decode_sentencepiece(token_ids, vocab, self.cfg.tokenizer_control_token_ids)
 
     def _compute_features(self, audio: mx.array) -> Tuple[mx.array, mx.array]:
         """Audio → mel features [1, T, features] + lengths [1]."""
@@ -588,7 +602,7 @@ class GigaAM(nn.Module):
                     last_label = k
                     new_symbols += 1
                     
-        return "".join(vocab[i] for i in hyp)
+        return self._decode_tokens(hyp)
 
     def transcribe_chunk(self, audio: mx.array) -> str:
         """Transcribe a single chunk (for streaming). Same as transcribe but clearer name."""
@@ -602,8 +616,8 @@ class GigaAM(nn.Module):
         """Pseudo-streaming transcription over pre-recorded audio.
 
         Uses growing buffer approach: each step transcribes from the start
-        up to the current position. GigaAM at 85x realtime makes this fast
-        even for 30s audio (~0.4s inference).
+        up to the current position, so the cost of a step grows with the
+        buffer; see README → Evaluation for measured speed.
 
         For very long audio (>30s), falls back to sliding window of last 30s.
 
@@ -664,7 +678,7 @@ class GigaAM(nn.Module):
         """Transcribe a growing audio buffer for live microphone use.
 
         Call this repeatedly as new audio arrives. Transcribes the full buffer
-        (capped at 30s from the end). GigaAM is 85x realtime so this is fast.
+        (capped at 30s from the end).
 
         Args:
             audio_buffer: The full accumulated audio so far.
@@ -694,6 +708,30 @@ class GigaAM(nn.Module):
         )
 
 
+def decode_sentencepiece(token_ids: List[int], pieces: List[str],
+                         control_ids: List[int] = ()) -> str:
+    """Decode SentencePiece token ids without the sentencepiece package.
+
+    Control tokens are dropped, ``<0xNN>`` byte-fallback pieces become raw
+    bytes, ``▁`` marks a word boundary and ``<unk>`` becomes `` ⁇ ``.
+    """
+    control = set(control_ids)
+    out = bytearray()
+    for i in token_ids:
+        if i in control or not 0 <= i < len(pieces):
+            continue
+        piece = pieces[i]
+        if piece == "<unk>":
+            out += " \u2047 ".encode()
+        elif len(piece) == 6 and piece.startswith("<0x") and piece.endswith(">"):
+            out.append(int(piece[3:5], 16))
+        else:
+            if not out:  # SentencePiece drops the dummy-prefix "▁" of the first piece
+                piece = piece.removeprefix("\u2581")
+            out += piece.replace("\u2581", " ").encode()
+    return out.decode("utf-8", errors="replace")
+
+
 def _incremental_text(previous: str, current: str) -> str:
     """Find new text added to current vs previous.
 
@@ -708,24 +746,33 @@ def _incremental_text(previous: str, current: str) -> str:
     return current
 
 
-def load_model(model_dir: str) -> GigaAM:
-    """Load converted GigaAM MLX model from directory."""
+def load_model(model_dir: str, dtype: Optional[mx.Dtype] = mx.float32) -> GigaAM:
+    """Load converted GigaAM MLX model from directory.
+
+    dtype: parameter dtype after loading. The default float32 upcasts the fp16
+    file once: activations are float32 either way (the log-mel input is fp32),
+    and with fp16 weights every op pays for a cast — about 20% slower on M4 Pro.
+    Pass None to keep the stored dtype (≈0.4 GB less memory).
+    """
     model_dir = Path(model_dir)
     cfg = GigaAMConfig.from_file(str(model_dir / "config.json"))
     model = GigaAM(cfg)
     weights = mx.load(str(model_dir / "model.safetensors"))
-    
+
     # Extract preprocessing weights
     mel_fb = weights.pop("mel_filterbank", None)
     stft_win = weights.pop("stft_window", None)
-    
+
+    if dtype is not None:
+        weights = {k: v.astype(dtype) for k, v in weights.items()}
+
+    # Load model weights
+    model.load_weights(list(weights.items()), strict=False)
+
     if mel_fb is not None:
         model.mel_filterbank = mel_fb.astype(mx.float32)
     if stft_win is not None:
         model.stft_window = stft_win.astype(mx.float32)
-    
-    # Load model weights
-    model.load_weights(list(weights.items()), strict=False)
     mx.eval(model.parameters())
     return model
 
