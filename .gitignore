@@ -10,6 +10,9 @@ mlx_convert/gigaam-v3-ctc-mlx/
 mlx_convert/gigaam-v3-ctc-mlx-fp32/
 mlx_convert/gigaam-v3-rnnt-mlx/
 mlx_convert/gigaam-v3-e2e-rnnt-mlx/
+mlx_convert/eval-models/
+mlx_convert/eval/data/
+mlx_convert/eval/results/*.jsonl
 train_utils/data
 train_utils/checkpoints
 .venv

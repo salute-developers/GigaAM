@@ -1,0 +1,391 @@
+{
+  "machine": {
+    "chip": "Apple M4 Pro",
+    "memory_gb": "24",
+    "macos": "26.6.2",
+    "python": "3.12.13",
+    "mlx": "0.32.2",
+    "torch": "2.14.0",
+    "torchaudio": "2.11.0"
+  },
+  "corpus": {
+    "clips": 200,
+    "seconds": 823.8469375
+  },
+  "v3_ctc": {
+    "pytorch": {
+      "wer": {
+        "errors": 17,
+        "substitutions": 15,
+        "insertions": 1,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.016983016983016984
+      },
+      "cer": {
+        "errors": 18,
+        "substitutions": 6,
+        "insertions": 2,
+        "deletions": 10,
+        "ref_units": 5924,
+        "rate": 0.003038487508440243
+      },
+      "wer_plain_subset": {
+        "errors": 17,
+        "substitutions": 15,
+        "insertions": 1,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.016983016983016984
+      }
+    },
+    "mlx_fp32": {
+      "wer": {
+        "errors": 17,
+        "substitutions": 15,
+        "insertions": 1,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.016983016983016984
+      },
+      "cer": {
+        "errors": 18,
+        "substitutions": 6,
+        "insertions": 2,
+        "deletions": 10,
+        "ref_units": 5924,
+        "rate": 0.003038487508440243
+      },
+      "wer_plain_subset": {
+        "errors": 17,
+        "substitutions": 15,
+        "insertions": 1,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.016983016983016984
+      },
+      "exact_match_vs_pytorch": 200,
+      "enc_max_abs_diff": {
+        "median": 2.9653310775756836e-06,
+        "max": 8.106231689453125e-05
+      },
+      "ctc_frame_agreement": 1.0
+    },
+    "mlx_fp16": {
+      "wer": {
+        "errors": 17,
+        "substitutions": 15,
+        "insertions": 1,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.016983016983016984
+      },
+      "cer": {
+        "errors": 18,
+        "substitutions": 6,
+        "insertions": 2,
+        "deletions": 10,
+        "ref_units": 5924,
+        "rate": 0.003038487508440243
+      },
+      "wer_plain_subset": {
+        "errors": 17,
+        "substitutions": 15,
+        "insertions": 1,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.016983016983016984
+      },
+      "exact_match_vs_pytorch": 200,
+      "enc_max_abs_diff": {
+        "median": 2.9653310775756836e-06,
+        "max": 8.106231689453125e-05
+      },
+      "ctc_frame_agreement": 1.0
+    },
+    "enc_abs_max_median": 1.5383418798446655,
+    "clips": 200,
+    "plain_subset_clips": 200
+  },
+  "v3_rnnt": {
+    "pytorch": {
+      "wer": {
+        "errors": 15,
+        "substitutions": 12,
+        "insertions": 2,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.014985014985014986
+      },
+      "cer": {
+        "errors": 14,
+        "substitutions": 3,
+        "insertions": 3,
+        "deletions": 8,
+        "ref_units": 5924,
+        "rate": 0.002363268062120189
+      },
+      "wer_plain_subset": {
+        "errors": 15,
+        "substitutions": 12,
+        "insertions": 2,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.014985014985014986
+      }
+    },
+    "mlx_fp32": {
+      "wer": {
+        "errors": 15,
+        "substitutions": 12,
+        "insertions": 2,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.014985014985014986
+      },
+      "cer": {
+        "errors": 14,
+        "substitutions": 3,
+        "insertions": 3,
+        "deletions": 8,
+        "ref_units": 5924,
+        "rate": 0.002363268062120189
+      },
+      "wer_plain_subset": {
+        "errors": 15,
+        "substitutions": 12,
+        "insertions": 2,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.014985014985014986
+      },
+      "exact_match_vs_pytorch": 200,
+      "enc_max_abs_diff": {
+        "median": 3.2032839953899384e-06,
+        "max": 1.7091631889343262e-05
+      }
+    },
+    "mlx_fp16": {
+      "wer": {
+        "errors": 15,
+        "substitutions": 12,
+        "insertions": 2,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.014985014985014986
+      },
+      "cer": {
+        "errors": 14,
+        "substitutions": 3,
+        "insertions": 3,
+        "deletions": 8,
+        "ref_units": 5924,
+        "rate": 0.002363268062120189
+      },
+      "wer_plain_subset": {
+        "errors": 15,
+        "substitutions": 12,
+        "insertions": 2,
+        "deletions": 1,
+        "ref_units": 1001,
+        "rate": 0.014985014985014986
+      },
+      "exact_match_vs_pytorch": 200,
+      "enc_max_abs_diff": {
+        "median": 3.2032839953899384e-06,
+        "max": 1.7091631889343262e-05
+      }
+    },
+    "enc_abs_max_median": 2.671436071395874,
+    "clips": 200,
+    "plain_subset_clips": 200
+  },
+  "v3_e2e_ctc": {
+    "pytorch": {
+      "wer": {
+        "errors": 65,
+        "substitutions": 46,
+        "insertions": 13,
+        "deletions": 6,
+        "ref_units": 1001,
+        "rate": 0.06493506493506493
+      },
+      "cer": {
+        "errors": 186,
+        "substitutions": 78,
+        "insertions": 75,
+        "deletions": 33,
+        "ref_units": 5924,
+        "rate": 0.03139770425388251
+      },
+      "wer_plain_subset": {
+        "errors": 25,
+        "substitutions": 19,
+        "insertions": 3,
+        "deletions": 3,
+        "ref_units": 825,
+        "rate": 0.030303030303030304
+      }
+    },
+    "mlx_fp32": {
+      "wer": {
+        "errors": 65,
+        "substitutions": 46,
+        "insertions": 13,
+        "deletions": 6,
+        "ref_units": 1001,
+        "rate": 0.06493506493506493
+      },
+      "cer": {
+        "errors": 186,
+        "substitutions": 78,
+        "insertions": 75,
+        "deletions": 33,
+        "ref_units": 5924,
+        "rate": 0.03139770425388251
+      },
+      "wer_plain_subset": {
+        "errors": 25,
+        "substitutions": 19,
+        "insertions": 3,
+        "deletions": 3,
+        "ref_units": 825,
+        "rate": 0.030303030303030304
+      },
+      "exact_match_vs_pytorch": 200,
+      "enc_max_abs_diff": {
+        "median": 3.933906555175781e-06,
+        "max": 8.713826537132263e-05
+      },
+      "ctc_frame_agreement": 1.0
+    },
+    "mlx_fp16": {
+      "wer": {
+        "errors": 65,
+        "substitutions": 46,
+        "insertions": 13,
+        "deletions": 6,
+        "ref_units": 1001,
+        "rate": 0.06493506493506493
+      },
+      "cer": {
+        "errors": 186,
+        "substitutions": 78,
+        "insertions": 75,
+        "deletions": 33,
+        "ref_units": 5924,
+        "rate": 0.03139770425388251
+      },
+      "wer_plain_subset": {
+        "errors": 25,
+        "substitutions": 19,
+        "insertions": 3,
+        "deletions": 3,
+        "ref_units": 825,
+        "rate": 0.030303030303030304
+      },
+      "exact_match_vs_pytorch": 200,
+      "enc_max_abs_diff": {
+        "median": 3.933906555175781e-06,
+        "max": 8.713826537132263e-05
+      },
+      "ctc_frame_agreement": 1.0
+    },
+    "enc_abs_max_median": 2.340498208999634,
+    "clips": 200,
+    "plain_subset_clips": 171
+  },
+  "v3_e2e_rnnt": {
+    "pytorch": {
+      "wer": {
+        "errors": 57,
+        "substitutions": 42,
+        "insertions": 10,
+        "deletions": 5,
+        "ref_units": 1001,
+        "rate": 0.056943056943056944
+      },
+      "cer": {
+        "errors": 189,
+        "substitutions": 79,
+        "insertions": 73,
+        "deletions": 37,
+        "ref_units": 5924,
+        "rate": 0.031904118838622555
+      },
+      "wer_plain_subset": {
+        "errors": 18,
+        "substitutions": 16,
+        "insertions": 1,
+        "deletions": 1,
+        "ref_units": 826,
+        "rate": 0.021791767554479417
+      }
+    },
+    "mlx_fp32": {
+      "wer": {
+        "errors": 57,
+        "substitutions": 42,
+        "insertions": 10,
+        "deletions": 5,
+        "ref_units": 1001,
+        "rate": 0.056943056943056944
+      },
+      "cer": {
+        "errors": 189,
+        "substitutions": 79,
+        "insertions": 73,
+        "deletions": 37,
+        "ref_units": 5924,
+        "rate": 0.031904118838622555
+      },
+      "wer_plain_subset": {
+        "errors": 18,
+        "substitutions": 16,
+        "insertions": 1,
+        "deletions": 1,
+        "ref_units": 826,
+        "rate": 0.021791767554479417
+      },
+      "exact_match_vs_pytorch": 200,
+      "enc_max_abs_diff": {
+        "median": 3.310851752758026e-06,
+        "max": 9.998679161071777e-06
+      }
+    },
+    "mlx_fp16": {
+      "wer": {
+        "errors": 57,
+        "substitutions": 42,
+        "insertions": 10,
+        "deletions": 5,
+        "ref_units": 1001,
+        "rate": 0.056943056943056944
+      },
+      "cer": {
+        "errors": 189,
+        "substitutions": 79,
+        "insertions": 73,
+        "deletions": 37,
+        "ref_units": 5924,
+        "rate": 0.031904118838622555
+      },
+      "wer_plain_subset": {
+        "errors": 18,
+        "substitutions": 16,
+        "insertions": 1,
+        "deletions": 1,
+        "ref_units": 826,
+        "rate": 0.021791767554479417
+      },
+      "exact_match_vs_pytorch": 200,
+      "enc_max_abs_diff": {
+        "median": 3.310851752758026e-06,
+        "max": 9.998679161071777e-06
+      }
+    },
+    "enc_abs_max_median": 2.4387344121932983,
+    "clips": 200,
+    "plain_subset_clips": 170
+  }
+}
