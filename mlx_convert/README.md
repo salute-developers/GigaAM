@@ -38,7 +38,7 @@ This creates a directory with:
 - `config.json` — model configuration + vocabulary (for E2E: all SentencePiece pieces)
 - `tokenizer.model` — SentencePiece model (E2E only; the runtime decodes from `config.json` and does not need the `sentencepiece` package)
 
-The upstream checkpoints are stored in fp16, so `--dtype float32` doubles the file without changing any value.
+The upstream encoder weights are stored in fp16, so `--dtype float32` doubles the file without changing them (only the small CTC head is fp32 upstream).
 
 ### 3. Transcribe
 
