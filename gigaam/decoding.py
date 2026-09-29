@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import torch
@@ -19,7 +20,7 @@ class Tokenizer:
             self.vocab = vocab
         else:
             self.model = SentencePieceProcessor()
-            self.model.load(model_path)
+            self.model.LoadFromSerializedProto(Path(model_path).read_bytes())
 
     def decode(self, tokens: List[int]) -> str:
         """
