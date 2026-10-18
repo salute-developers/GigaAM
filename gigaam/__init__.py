@@ -127,11 +127,14 @@ def hash_path(ckpt_path: str) -> str:
 
 
 def _apply_flash_policy(cfg, use_flash: Optional[bool], device_obj: torch.device):
-    """Apply the flash_attn override and the CPU fallback to a model cfg."""
+    """Apply the flash_attn override and the non-CUDA fallback to a model cfg."""
     if use_flash is not None:
         cfg.encoder.flash_attn = use_flash
-    if cfg.encoder.get("flash_attn", False) and device_obj.type == "cpu":
-        logging.warning("flash_attn is not supported on CPU. Disabling it...")
+    if cfg.encoder.get("flash_attn", False) and device_obj.type != "cuda":
+        logging.warning(
+            "flash_attn is only supported on CUDA, not on %s. Disabling it...",
+            device_obj.type,
+        )
         cfg.encoder.flash_attn = False
 
 
@@ -147,11 +150,20 @@ def _finalize_model(
     return model.to(device_obj)
 
 
+def _default_device() -> torch.device:
+    """The first available accelerator: CUDA, then Intel XPU, otherwise the CPU."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    xpu = getattr(torch, "xpu", None)
+    if xpu is not None and xpu.is_available():
+        return torch.device("xpu")
+    return torch.device("cpu")
+
+
 def _normalize_device(device: Optional[Union[str, torch.device]]) -> torch.device:
     """Normalize device parameter to torch.device."""
     if device is None:
-        device_str = "cuda" if torch.cuda.is_available() else "cpu"
-        return torch.device(device_str)
+        return _default_device()
     if isinstance(device, str):
         return torch.device(device)
     return device
@@ -177,7 +189,8 @@ def load_model(
         Whether to use flash_attn if the model allows it (requires the flash_attn library installed).
         Default to False.
     device : Optional[Union[str, torch.device]]
-        The device to load the model onto. Defaults to "cuda" if available, otherwise "cpu".
+        The device to load the model onto. Defaults to "cuda" if available, then "xpu"
+        (Intel GPUs), otherwise "cpu".
     download_root : Optional[str]
         The directory to download the model to. Defaults to "~/.cache/gigaam".
     """
