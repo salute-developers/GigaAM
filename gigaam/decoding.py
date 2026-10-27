@@ -111,20 +111,6 @@ class RNNTGreedyDecoding:
         self.blank_id = len(self.tokenizer)
         self.max_symbols = max_symbols_per_step
 
-    @staticmethod
-    def _cat_states(states):
-        """Pack per-sample LSTM states into batched (h, c)."""
-        hs = [s[0] for s in states]
-        cs = [s[1] for s in states]
-        return torch.cat(hs, dim=1), torch.cat(cs, dim=1)
-
-    @staticmethod
-    def _split_state(state):
-        """Unpack batched (h, c) into per-sample states."""
-        h, c = state
-        b = h.shape[1]
-        return [(h[:, i : i + 1], c[:, i : i + 1]) for i in range(b)]
-
     @torch.inference_mode()
     def decode(
         self,
@@ -135,73 +121,53 @@ class RNNTGreedyDecoding:
         """
         RNN-T greedy decode: returns (text, token_ids, token_frames) per sample.
         Token frames are encoder time indices where tokens are emitted.
+
+        The whole batch is decoded at once: predictor outputs and LSTM states
+        stay batched tensors and are updated with a mask of emitting samples,
+        so every step costs one predictor and one joint call for the batch.
         """
         x = encoded.transpose(1, 2)  # [B, T, D]
-        B, T, _ = x.shape
-        device = x.device
+        B = x.shape[0]
+        enc_len = enc_len.to(x.device)
 
-        hyps: List[List[int]] = [[] for _ in range(B)]
-        token_frames: List[List[int]] = [[] for _ in range(B)]
-        last_label: List[Optional[Tensor]] = [None] * B
-        dec_state: List[Optional[Tuple[Tensor, Tensor]]] = [None] * B
+        # Predictor output and state after the last emitted label (none yet).
+        g, state = head.decoder.predict(None, None, batch_size=B)
 
-        def emit_batch(batch_idx: List[int], t: int, fresh: bool) -> List[int]:
-            """One batched predictor+joint step; returns samples that emitted non-blank."""
-            idx = torch.tensor(batch_idx, device=device, dtype=torch.long)
-            f = x[idx, t : t + 1, :]  # [b, 1, D]
+        step_tokens: List[Tensor] = []
+        step_masks: List[Tensor] = []
+        step_frames: List[int] = []
 
-            if fresh:
-                g, hidden = head.decoder.predict(None, None, batch_size=len(batch_idx))
-            else:
-                labels = torch.cat([last_label[i] for i in batch_idx], dim=0)  # [b, 1]
-                state = self._cat_states([dec_state[i] for i in batch_idx])
-                g, hidden = head.decoder.predict(
-                    labels, state, batch_size=len(batch_idx)
-                )
-
-            k = head.joint.joint(f, g)[:, 0, 0, :].argmax(dim=-1)  # [b]
-            emit = k.ne(self.blank_id)
-
-            if not emit.any():
-                return []
-
-            hidden_parts = self._split_state(hidden)
-            out = []
-
-            for p in emit.nonzero(as_tuple=False).squeeze(1).tolist():
-                bi = batch_idx[p]
-                tok = int(k[p])
-
-                hyps[bi].append(tok)
-                token_frames[bi].append(t)
-                last_label[bi] = k[p : p + 1].view(1, 1)
-                dec_state[bi] = hidden_parts[p]
-                out.append(bi)
-
-            return out
-
-        enc_len = enc_len.cpu()
-        for t in range(T):
-            active = (t < enc_len).nonzero(as_tuple=False).squeeze(1).tolist()
-            if not active:
-                break
-
+        for t in range(int(enc_len.max()) if B else 0):
+            active = enc_len > t
             for _ in range(self.max_symbols):
-                if not active:
+                k = head.joint.joint(x[:, t : t + 1, :], g)[:, 0, 0, :].argmax(dim=-1)
+                emit = active & k.ne(self.blank_id)
+                if not emit.any():
                     break
 
-                fresh = [i for i in active if dec_state[i] is None]
-                stateful = [i for i in active if dec_state[i] is not None]
+                step_tokens.append(k)
+                step_masks.append(emit)
+                step_frames.append(t)
 
-                next_active = []
-                if fresh:
-                    next_active.extend(emit_batch(fresh, t, fresh=True))
-                if stateful:
-                    next_active.extend(emit_batch(stateful, t, fresh=False))
+                g_new, state_new = head.decoder.predict(
+                    k.unsqueeze(1), state, batch_size=B
+                )
+                g = torch.where(emit[:, None, None], g_new, g)
+                state = tuple(
+                    torch.where(emit[None, :, None], new, old)
+                    for new, old in zip(state_new, state)
+                )
+                active = emit
 
-                if not next_active:
-                    break
+        if not step_tokens:
+            return [(self.tokenizer.decode([]), [], []) for _ in range(B)]
 
-                active = next_active
+        tokens = torch.stack(step_tokens, dim=1).cpu()  # [B, steps]
+        masks = torch.stack(step_masks, dim=1).cpu()  # [B, steps]
+        frames = torch.tensor(step_frames)  # [steps]
 
-        return [(self.tokenizer.decode(h), h, tf) for h, tf in zip(hyps, token_frames)]
+        out = []
+        for i in range(B):
+            hyp = tokens[i][masks[i]].tolist()
+            out.append((self.tokenizer.decode(hyp), hyp, frames[masks[i]].tolist()))
+        return out
