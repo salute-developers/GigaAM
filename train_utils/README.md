@@ -14,12 +14,26 @@ cd train_utils
 
 ## Data format
 
-TSV manifest (tab-separated columns): `path`, `duration`, and optionally `transcription`. Paths may be absolute or relative to the manifest directory. `transcription` may be omitted for audio-only manifests.
+Fine-tuning TSV manifests use `path`, `duration`, and at least one column named
+`transcription_e2e` or `transcription_raw`. Each column is optional, and cells may be
+empty. Dual-head models tokenize each column independently and train only the heads
+with labels on each row, sharing one encoder pass per batch. The loss averages the eligible examples for each head, then
+averages the available head losses. Single-head E2E models use only
+`transcription_e2e`; other single-head models use only `transcription_raw`. Rows with
+no eligible tokens are skipped with a count; an entirely ineligible dataset fails.
+`transcription` remains an inference-only legacy field and is not a training fallback.
+Paths may be absolute or relative to the manifest directory. Dataset download helpers
+preserve the source text in `transcription_e2e` and derive `transcription_raw` with
+`normalize_raw_text`.
 
+```text
+path\tduration\ttranscription_e2e\ttranscription_raw
+audio/001.wav\t1.5\tHello!\thello
+audio/002.wav\t2.0\t\tgood morning
 ```
-path	duration	transcription
-audio/0001.wav	3.21	привет как дела
-```
+
+Conditioned models accept `--language` using the model's existing language names or
+mixtures. This preserves the trained conditioning and does not add language slots.
 
 ## Training
 
@@ -52,7 +66,9 @@ python train.py \
 
 ### Fine-tuning a new language from an SSL backbone
 
-The `*_ssl` models (e.g. `multilingual_ssl`) are self-supervised backbones: a preprocessor and a Conformer encoder, without an ASR decoder. To adapt one to a new language (Georgian, Bashkir, ...), pass the SSL model as `--model_name` together with a target vocabulary — `train.py` then attaches a freshly initialized character-wise head and fine-tunes it. Choose the head with `--head ctc` (default) or `--head rnnt`.
+The `*_ssl` models (e.g. `multilingual_ssl`) are self-supervised backbones: a preprocessor and a Conformer encoder, without an ASR decoder. To adapt one to a new language, pass the SSL model as `--model_name` together with a target vocabulary — `train.py` then attaches a freshly initialized character-wise head and fine-tunes it. Choose the head with `--head ctc` (default) or `--head rnnt`.
+
+SSL fine-tuning creates a single head. With `--raw_text`, it reads only `transcription_raw`; otherwise it reads only `transcription_e2e`.
 
 The vocabulary is either derived from your training transcriptions or supplied as a file. With `--raw_text` (recommended) the labels are normalized charwise (lowercase, punctuation stripped) and the derived vocabulary follows; without it the verbatim transcriptions are used (e2e-style, case and punctuation become output classes). A file-supplied vocabulary is used as-is — mismatches against the manifests are reported as warnings:
 
@@ -135,6 +151,7 @@ python train.py \
 | Argument | Default | Description |
 |---|---|---|
 | `--lr` | `2e-5` | Peak learning rate (AdamW) |
+| `--head_lr_multiplier` | `1.0` | Multiply the head peak LR. |
 | `--weight_decay` | `0.01` | AdamW weight decay |
 | `--warmup_ratio` | `0.1` | Linear warmup fraction before cosine decay |
 | `--gradient_clip_val` | `1.0` | Global gradient norm clipping |
@@ -179,6 +196,8 @@ python eval.py --model_name v3_e2e_ctc --eval_manifest /path/to/manifest.tsv
 ```
 
 This writes `preds.jsonl` and prints WER. Predictions are saved under `predictions/<manifest_stem>/<exp_name>/step_<step>/preds.jsonl` (`step_<step>` is omitted for pretrained models) next to the manifest. WER is reported on the original transcripts (end-to-end) and on raw texts.
+
+By default, RAW WER applies `assets/word_substitutions.tsv`, compiled primarily for Golos dataset. Pass `word_substitutions=False` to `compute_wer` to disable these substitutions. Use `--language az` for correct Azerbaijani casing.
 
 ## Loading fine-tuned checkpoints
 

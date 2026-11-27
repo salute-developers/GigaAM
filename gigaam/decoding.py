@@ -59,26 +59,39 @@ class CTCGreedyDecoding:
         head: "CTCHead",
         encoded: Tensor,
         lengths: Tensor,
+        states=None,
     ) -> List[Tuple[str, List[int], List[int]]]:
         """
         CTC greedy decode: returns (text, token_ids, token_frames) per sample.
         Token frames are time indices (0..T-1) where a token is emitted.
         """
         log_probs = head(encoder_output=encoded)
+        if log_probs.ndim == 2:
+            return self.decode_labels(log_probs, lengths, states)
         C = log_probs.shape[-1]
         assert (
             C == len(self.tokenizer) + 1
         ), f"Num classes {C} != len(vocab)+1 {len(self.tokenizer) + 1}"
         labels = log_probs.argmax(dim=-1)
+        return self.decode_labels(labels, lengths, states)
 
+    def decode_labels(self, labels: Tensor, lengths: Tensor, states=None):
+        labels = labels.cpu()
         B, T = labels.shape
-        device = labels.device
-        lengths = lengths.to(device=device).clamp(min=0, max=T)
+        lengths = lengths.cpu().clamp(min=0, max=T)
 
         skip_mask = labels != self.blank_id
+        if states is not None and T:
+            previous = labels.new_tensor(
+                [
+                    self.blank_id if state.previous is None else state.previous
+                    for state in states
+                ]
+            )
+            skip_mask[:, 0] &= labels[:, 0] != previous
         skip_mask[:, 1:] &= labels[:, 1:] != labels[:, :-1]
 
-        time = torch.arange(T, device=device)[None, :]
+        time = torch.arange(T, device=labels.device)[None, :]
         skip_mask &= time < lengths[:, None]
 
         idx = skip_mask.nonzero(as_tuple=False)
@@ -86,14 +99,23 @@ class CTCGreedyDecoding:
         token_frames_flat = idx[:, 1]
         token_ids_flat = labels[skip_mask]
 
-        counts = torch.bincount(batch_idx, minlength=B).cpu().tolist()
-        ids_splits = token_ids_flat.cpu().split(counts)
-        fr_splits = token_frames_flat.cpu().split(counts)
+        counts = torch.bincount(batch_idx, minlength=B).tolist()
+        ids_splits = token_ids_flat.split(counts)
+        fr_splits = token_frames_flat.split(counts)
 
-        return [
-            (self.tokenizer.decode(ids.tolist()), ids.tolist(), fr.tolist())
-            for ids, fr in zip(ids_splits, fr_splits)
-        ]
+        results = []
+        for index, (ids, frames) in enumerate(zip(ids_splits, fr_splits)):
+            tokens, positions = ids.tolist(), frames.tolist()
+            if states is not None:
+                state = states[index]
+                state.tokens.extend(tokens)
+                state.frames.extend(frame + state.frame_offset for frame in positions)
+                count = int(lengths[index])
+                if count:
+                    state.previous = int(labels[index, count - 1])
+                state.frame_offset += count
+            results.append((self.tokenizer.decode(tokens), tokens, positions))
+        return results
 
 
 class RNNTGreedyDecoding:
@@ -103,11 +125,11 @@ class RNNTGreedyDecoding:
 
     def __init__(
         self,
-        vocabulary: List[str],
+        vocabulary: Optional[List[str]] = None,
         model_path: Optional[str] = None,
         max_symbols_per_step: int = 10,
     ):
-        self.tokenizer = Tokenizer(vocabulary, model_path)
+        self.tokenizer = Tokenizer(vocabulary or [], model_path)
         self.blank_id = len(self.tokenizer)
         self.max_symbols = max_symbols_per_step
 
@@ -131,6 +153,7 @@ class RNNTGreedyDecoding:
         head: "RNNTHead",
         encoded: Tensor,
         enc_len: Tensor,
+        states=None,
     ) -> List[Tuple[str, List[int], List[int]]]:
         """
         RNN-T greedy decode: returns (text, token_ids, token_frames) per sample.
@@ -142,66 +165,93 @@ class RNNTGreedyDecoding:
 
         hyps: List[List[int]] = [[] for _ in range(B)]
         token_frames: List[List[int]] = [[] for _ in range(B)]
-        last_label: List[Optional[Tensor]] = [None] * B
-        dec_state: List[Optional[Tuple[Tensor, Tensor]]] = [None] * B
+        last_label = (
+            [state.previous for state in states] if states is not None else [None] * B
+        )
+        dec_state = (
+            [state.hidden for state in states] if states is not None else [None] * B
+        )
 
-        def emit_batch(batch_idx: List[int], t: int, fresh: bool) -> List[int]:
-            """One batched predictor+joint step; returns samples that emitted non-blank."""
-            idx = torch.tensor(batch_idx, device=device, dtype=torch.long)
-            f = x[idx, t : t + 1, :]  # [b, 1, D]
+        prediction = (
+            [state.prediction for state in states] if states is not None else [None] * B
+        )
+        prediction_hidden = (
+            [state.prediction_hidden for state in states]
+            if states is not None
+            else [None] * B
+        )
 
+        def predict_batch(batch_idx: List[int], fresh: bool):
             if fresh:
                 g, hidden = head.decoder.predict(None, None, batch_size=len(batch_idx))
             else:
-                labels = torch.cat([last_label[i] for i in batch_idx], dim=0)  # [b, 1]
+                labels = torch.tensor(
+                    [[last_label[i]] for i in batch_idx], device=device
+                )
                 state = self._cat_states([dec_state[i] for i in batch_idx])
                 g, hidden = head.decoder.predict(
                     labels, state, batch_size=len(batch_idx)
                 )
+            for i, value, hidden_part in zip(
+                batch_idx, g.split(1), self._split_state(hidden)
+            ):
+                prediction[i] = value
+                prediction_hidden[i] = hidden_part
 
-            k = head.joint.joint(f, g)[:, 0, 0, :].argmax(dim=-1)  # [b]
-            emit = k.ne(self.blank_id)
-
-            if not emit.any():
-                return []
-
-            hidden_parts = self._split_state(hidden)
-            out = []
-
-            for p in emit.nonzero(as_tuple=False).squeeze(1).tolist():
-                bi = batch_idx[p]
-                tok = int(k[p])
-
-                hyps[bi].append(tok)
-                token_frames[bi].append(t)
-                last_label[bi] = k[p : p + 1].view(1, 1)
-                dec_state[bi] = hidden_parts[p]
-                out.append(bi)
-
-            return out
-
+        # Blank frames leave the prediction unchanged, so score a window at once.
+        window = 8 if getattr(head.joint, "supports_frame_windows", False) else 1
+        offsets = torch.arange(window, device=device)
         enc_len = enc_len.cpu()
-        for t in range(T):
-            active = (t < enc_len).nonzero(as_tuple=False).squeeze(1).tolist()
-            if not active:
-                break
+        limits = enc_len.clamp(max=T).tolist()
+        positions = [0] * B
+        repeats = [0] * B
+        active = [i for i, limit in enumerate(limits) if limit > 0]
+        while active and self.max_symbols > 0:
+            missing = [i for i in active if prediction[i] is None]
+            fresh = [i for i in missing if last_label[i] is None]
+            stateful = [i for i in missing if last_label[i] is not None]
+            if fresh:
+                predict_batch(fresh, fresh=True)
+            if stateful:
+                predict_batch(stateful, fresh=False)
 
-            for _ in range(self.max_symbols):
-                if not active:
-                    break
+            rows = torch.tensor(active, device=device)
+            start = torch.tensor([positions[i] for i in active], device=device)
+            frames = (start[:, None] + offsets).clamp_max(T - 1)
+            features = x[rows[:, None], frames]
+            predicted = torch.cat([prediction[i] for i in active])
+            labels = head.joint.joint(features, predicted)[:, :, 0, :].argmax(-1)
+            for i, labels_row in zip(active, labels.tolist()):
+                count = min(window, limits[i] - positions[i])
+                for delta, token in enumerate(labels_row[:count]):
+                    if token != self.blank_id:
+                        break
+                else:
+                    positions[i] += count
+                    repeats[i] = 0
+                    continue
+                positions[i] += delta
+                repeats[i] = 1 if delta else repeats[i] + 1
+                hyps[i].append(token)
+                token_frames[i].append(positions[i])
+                last_label[i] = token
+                dec_state[i] = prediction_hidden[i]
+                prediction[i] = prediction_hidden[i] = None
+                if repeats[i] >= self.max_symbols:
+                    positions[i] += 1
+                    repeats[i] = 0
+            active = [i for i in active if positions[i] < limits[i]]
 
-                fresh = [i for i in active if dec_state[i] is None]
-                stateful = [i for i in active if dec_state[i] is not None]
-
-                next_active = []
-                if fresh:
-                    next_active.extend(emit_batch(fresh, t, fresh=True))
-                if stateful:
-                    next_active.extend(emit_batch(stateful, t, fresh=False))
-
-                if not next_active:
-                    break
-
-                active = next_active
-
+        if states is not None:
+            for index, state in enumerate(states):
+                state.tokens.extend(hyps[index])
+                state.frames.extend(
+                    frame + state.frame_offset for frame in token_frames[index]
+                )
+                if last_label[index] is not None:
+                    state.previous = last_label[index]
+                state.hidden = dec_state[index]
+                state.prediction = prediction[index]
+                state.prediction_hidden = prediction_hidden[index]
+                state.frame_offset += int(enc_len[index])
         return [(self.tokenizer.decode(h), h, tf) for h, tf in zip(hyps, token_frames)]

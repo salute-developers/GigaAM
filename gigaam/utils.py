@@ -1,5 +1,9 @@
+import copy
 import csv
+import json
 import os
+import re
+import shutil
 import unicodedata
 import warnings
 from collections.abc import Iterable
@@ -7,27 +11,28 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union, cast
 
 import numpy as np
+import omegaconf
 import soundfile as sf
 import torch
 import torch.nn.functional as F
-import torchaudio
 from torch import Tensor
 from torch.jit import TracerWarning
 
-from .preprocess import SAMPLE_RATE
+from .preprocess import SAMPLE_RATE, load_audio
 from .types import AudioDatasetSample
 
 
-def normalize_raw_text(text: str) -> str:
+def normalize_raw_text(text: str, language: Optional[str] = None) -> str:
     """
     Script-agnostic normalization: lowercase, collapse whitespace,
-    and keep only alphanumeric characters plus spaces — i.e. drop punctuation/symbols.
+    replace punctuation with spaces, and drop other symbols.
 
     Word-internal apostrophes are preserved (e.g. ``don't`` stays ``don't``).
     Apostrophe variants are normalized to ASCII ``'``.
-    Standalone quotes are dropped (not between two alphanumerics).
-    Hyphens/dashes (Unicode category Pd) split words (``word-internal`` -> ``word internal``).
+    Standalone quotes are replaced with spaces.
     """
+    if language == "az":
+        text = text.replace("I", "ı").replace("İ", "i")
     text = text.replace("ё", "е").replace("Ё", "Е").lower()
     for quote in ("’", "‘", "ʻ", "ʼ"):
         text = text.replace(quote, "'")
@@ -40,11 +45,35 @@ def normalize_raw_text(text: str) -> str:
                 and text[i + 1].isalnum()
             ):
                 out.append(c)
+            else:
+                out.append(" ")
         elif c.isalnum() or c.isspace():
             out.append(c)
-        elif unicodedata.category(c) == "Pd":
+        elif unicodedata.category(c).startswith("P") and c not in "՛՜՞":
             out.append(" ")
     return " ".join("".join(out).split())
+
+
+def _namespace_onnx_external_data(path):
+    """Keep exported graphs from overwriting each other's external weights."""
+    import onnx
+    from onnx.external_data_helper import _get_all_tensors
+
+    graph = onnx.load(path, load_external_data=False)
+    locations = {}
+    for tensor in _get_all_tensors(graph):
+        for entry in tensor.external_data:
+            if entry.key == "location":
+                location = entry.value
+                if location not in locations:
+                    target = Path(location).with_name(
+                        f"{path.stem}_{Path(location).name}"
+                    )
+                    (path.parent / location).replace(path.parent / target)
+                    locations[location] = str(target)
+                entry.value = locations[location]
+    if locations:
+        onnx.save(graph, path)
 
 
 def onnx_converter(
@@ -58,11 +87,12 @@ def onnx_converter(
         Union[Dict[str, List[int]], Dict[str, Dict[int, str]]]
     ] = None,
     opset_version: int = 17,
-    export_dtype: torch.dtype = torch.float32,
+    export_dtype: Optional[torch.dtype] = torch.float32,
 ):
     """
     Export a submodule to ONNX: casts inputs and ``module`` to ``export_dtype`` for tracing,
     then restores the module to float32 via ``module.float()`` so the model stays usable.
+    With ``export_dtype=None``, preserve existing module and input dtypes instead.
     """
     if inputs is None:
         inputs = module.input_example()  # type: ignore[operator]
@@ -72,7 +102,12 @@ def onnx_converter(
         output_names = module.output_names()  # type: ignore[operator]
 
     inputs = tuple(
-        x.to(export_dtype) if x.dtype == torch.float32 else x for x in inputs
+        (
+            x.to(export_dtype)
+            if export_dtype is not None and x.dtype == torch.float32
+            else x
+        )
+        for x in inputs
     )
 
     Path(out_dir).mkdir(exist_ok=True, parents=True)
@@ -81,7 +116,7 @@ def onnx_converter(
         warnings.simplefilter("ignore", category=UserWarning)
         warnings.simplefilter("ignore", category=TracerWarning)
         torch.onnx.export(
-            module.to(export_dtype),
+            module.to(export_dtype) if export_dtype is not None else module,
             inputs,
             out_path,
             input_names=input_names,
@@ -90,9 +125,293 @@ def onnx_converter(
             opset_version=opset_version,
             dynamo=False,
         )
+    _namespace_onnx_external_data(Path(out_path))
     print(f"Successfully ported onnx {model_name} to {out_path}.")
     # We force the whole module to float32 to avoid fp16 preprocessing issues
-    module.float()
+    if export_dtype is not None:
+        module.float()
+
+
+def _state_schema(tensors):
+    return [
+        dict(shape=list(value.shape), dtype=str(value.dtype).removeprefix("torch."))
+        for value in tensors
+    ]
+
+
+def export_onnx(
+    model,
+    dir_path=".",
+    dtype=torch.float32,
+    future_context_ms=None,
+    streaming=False,
+    dynamic_context=None,
+):
+    """Prepare an export-only model copy and delegate graph composition."""
+    dual = hasattr(model, "heads")
+    model = copy.deepcopy(model).float().eval()
+    if dual:
+        model.encoder.to(dtype=dtype)
+        return model._to_onnx(
+            dir_path, dtype, future_context_ms, streaming, dynamic_context
+        )
+    model._to_onnx(dir_path, dtype)
+    omegaconf.OmegaConf.save(model.cfg, f"{dir_path}/{model.cfg.model_name}.yaml")
+
+
+def _export_advance(model, directory, name, example):
+    from .decoder import RNNTDecodeExport
+
+    decoder = RNNTDecodeExport(model, example.float())
+    onnx_converter(
+        name,
+        torch.jit.script(decoder),
+        str(directory),
+        decoder.input_example(example.float()),
+        ["projected", "lengths"],
+        ["tokens"],
+        decoder.dynamic_axes(),
+    )
+
+
+def _export_heads(model, directory, model_name=None, *, frame_windows=False):
+    for name, head in model.heads.items():
+        prefix = f"{model_name or model.cfg.model_name}_{name}"
+        parts = (
+            {"ctc": head}
+            if hasattr(head, "decoder_layers")
+            else {"decoder": head.decoder, "joint": head.joint}
+        )
+        for part, module in parts.items():
+            axes = module.dynamic_axes()
+            if frame_windows and part == "joint":
+                axes["enc"][2] = axes["joint"][1] = "frames"
+            onnx_converter(
+                f"{prefix}_{part}",
+                module,
+                str(directory),
+                dynamic_axes=axes,
+            )
+
+
+def _save_onnx_config(model, directory, future_context_ms=None, model_name=None):
+    directory = Path(directory)
+    cfg = model.cfg
+    cfg.model_name = model_name or model.cfg.model_name
+    cfg.onnx_future_context_ms = future_context_ms
+    cfg.onnx_default_language = model.default_language
+    for name, decoding in model.decodings.items():
+        path = cfg.decodings[name].get("model_path")
+        if path:
+            target = f"{cfg.model_name}_{name}_tokenizer.model"
+            shutil.copyfile(path, directory / target)
+            cfg.decodings[name].model_path = target
+    omegaconf.OmegaConf.save(cfg, directory / f"{cfg.model_name}.yaml")
+
+
+def _export_streaming(model, directory, future_context_ms, dynamic_context):
+    contexts = {int(c.future_context_ms): c for c in model.cfg.streaming.contexts}
+    milliseconds = max(contexts) if future_context_ms is None else future_context_ms
+    context = contexts[milliseconds]
+    factor = model.encoder.subsampling_factor
+    frame_ms = model.encoder.frame_shift_ms
+    chunk, left = int(milliseconds / frame_ms), int(context.left_context)
+
+    encoder, device = model.encoder, model._device
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    base_name = re.sub(r"_(?:\d+ms|dynamic)$", "", model.cfg.model_name)
+    prefix = (
+        f"{base_name}_dynamic" if dynamic_context else f"{base_name}_{milliseconds}ms"
+    )
+    manifest = dict(model_name=prefix, future_context_ms=milliseconds)
+    warm = encoder.create_stream_state(chunk, left)
+    example = torch.zeros(
+        1,
+        model.cfg.preprocessor.features,
+        factor * (left + chunk),
+        device=device,
+        dtype=next(encoder.parameters()).dtype,
+    )
+    lengths = torch.tensor([example.shape[-1]], device=device)
+    kwargs = {}
+    if model.language_embedding is not None:
+        kwargs["lang_embedding"] = model.language_embedding.weight.new_zeros(
+            1, model.language_embedding.weight.shape[1]
+        )
+    with (
+        torch.no_grad(),
+        torch.autocast(
+            device_type=device.type,
+            dtype=torch.float16,
+            enabled=device.type == "cuda"
+            and next(encoder.parameters()).dtype == torch.float16,
+        ),
+    ):
+        encoder(example, lengths, state=warm, final=True, **kwargs)
+    states = [
+        torch.zeros_like(value) for layer in warm.layers for value in layer.tensors()
+    ]
+    example = example[:, :, : chunk * factor]
+    lengths = torch.tensor([example.shape[-1]], device=device)
+    front = [torch.zeros_like(value) for value in warm.frontend]
+    name = f"{prefix}_stream_frontend"
+    saved_forward = encoder.forward
+    encoder.forward = encoder.forward_frontend_for_export
+    batch = getattr(encoder, "_triton_batch", False)
+    native_ctc = (
+        base_name == "v4_ctc"
+        and batch
+        and dynamic_context
+        and getattr(encoder, "_triton_native", False)
+    )
+    if native_ctc:
+        encoder.frontend._export_native_conv = True
+    manifest["batched"] = batch
+
+    def export(name, module, inputs, names, outputs, axes):
+        if batch:
+            inputs = tuple(
+                (
+                    value
+                    if key == "context_frames"
+                    else value.repeat((2,) + (1,) * (value.ndim - 1))
+                )
+                for key, value in zip(names, inputs, strict=True)
+            )
+            axes = {
+                key: {0: "batch", **axes.get(key, {})}
+                for key in (*names, *outputs)
+                if key != "context_frames"
+            }
+        onnx_converter(
+            name,
+            module,
+            str(directory),
+            inputs,
+            names,
+            outputs,
+            axes,
+            export_dtype=None,
+        )
+
+    export(
+        name,
+        encoder,
+        (example, lengths, *front),
+        ["features", "feature_lengths", *[f"front_{i}" for i in range(len(front))]],
+        [
+            "pre_encoded",
+            "encoded_lengths",
+            *[f"next_front_{i}" for i in range(len(front))],
+        ],
+        {"features": {2: "mel_frames"}, "pre_encoded": {1: "frames"}},
+    )
+    encoder.forward = saved_forward
+    frontend = dict(
+        file=name + ".onnx",
+        states=_state_schema(front),
+    )
+    encoder._onnx_context = (chunk, left, dynamic_context)
+    encoder._onnx_caches = states
+    model.forward = model.forward_for_export
+    name = f"{prefix}_stream_step"
+    if native_ctc:
+        from .decoder import CTCStreamExport
+
+        inputs, outputs = encoder.input_names(), encoder.output_names()
+        export(
+            name,
+            CTCStreamExport(model, len(front)),
+            (example, lengths, *encoder.input_example()[2:5], *front, *states),
+            [*inputs[:5], *[f"front_{i}" for i in range(len(front))], *inputs[5:]],
+            [
+                *outputs[:4],
+                *[f"next_front_{i}" for i in range(len(front))],
+                *outputs[4:],
+            ],
+            {"features": {2: "mel_frames"}, "encoded": {2: "frames"}},
+        )
+        manifest["ctc_labels"] = list(model.heads)
+        del encoder.frontend._export_native_conv
+    else:
+        export(
+            name,
+            model,
+            encoder.input_example(),
+            encoder.input_names(),
+            encoder.output_names(),
+            encoder.dynamic_axes(),
+        )
+    native_rnnt = getattr(encoder, "_triton_native", False) and base_name in (
+        "v4_rnnt",
+        "multilingual_v2_rnnt",
+        "v2_multilingual_rnnt",
+    )
+    from .decoder import CTCHead, DualASRExport, RNNTHead
+
+    encoder._onnx_context = dict(chunk=chunk, left_context=left)
+    heads = tuple(getattr(model, "heads", {}).values())
+    fused = bool(heads) and (
+        all(isinstance(head, CTCHead) for head in heads)
+        or (
+            all(isinstance(head, RNNTHead) for head in heads)
+            and getattr(encoder, "_triton_provider", None)
+            not in ("TensorRT", "TensorRT-fp16")
+        )
+    )
+    whole = DualASRExport(model) if fused else None
+    if whole is not None:
+        model.cfg.onnx_fc = list(model.heads)
+    whole_name = f"{prefix}_encoder"
+    onnx_converter(
+        whole_name,
+        whole if whole is not None else model,
+        str(directory),
+        encoder.input_example(batch_size=2, seqlen=96),
+        encoder.input_names(),
+        whole.output_names if whole is not None else encoder.output_names(),
+        whole.dynamic_axes() if whole is not None else encoder.dynamic_axes(),
+        export_dtype=None,
+    )
+    if whole is not None and not whole.ctc:
+        _export_advance(model, directory, f"{prefix}_advance", example)
+        manifest["advance"] = dict(file=f"{prefix}_advance.onnx")
+    manifest["whole"] = dict(file=whole_name + ".onnx")
+    manifest.update(
+        subsampling_factor=factor,
+        frame_shift_ms=frame_ms,
+        encoder_dim=encoder.feat_out,
+        frontend=frontend,
+        step=dict(file=name + ".onnx"),
+        states=_state_schema(states),
+    )
+    if native_rnnt:
+        from .decoder import RNNTStreamDecodeExport
+
+        decoder = RNNTStreamDecodeExport(model, example.float())
+        name = f"{prefix}_packet_decode"
+        onnx_converter(
+            name,
+            torch.jit.script(decoder),
+            str(directory),
+            decoder.input_example(example.float()),
+            decoder.input_names,
+            decoder.output_names,
+            decoder.dynamic_axes(),
+        )
+        manifest.update(packet_decode=name + ".onnx", packet_heads=list(model.heads))
+    for filename in (f"{prefix}.streaming.json", "streaming.json"):
+        (directory / filename).write_text(json.dumps(manifest, indent=2) + "\n")
+    provider = getattr(encoder, "_triton_provider", None)
+    _export_heads(
+        model,
+        directory,
+        prefix,
+        frame_windows=provider not in ("TensorRT", "TensorRT-fp16"),
+    )
+    _save_onnx_config(model, directory, milliseconds, prefix)
+    return prefix
 
 
 def format_time(seconds: float) -> str:
@@ -190,7 +509,8 @@ def download_short_audio() -> str:
     audio_file = "example.wav"
     if not os.path.exists(audio_file):
         os.system(
-            'wget -O example.wav "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/example.wav"'
+            "wget -O example.wav "
+            '"https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/example.wav"'
         )
     assert os.path.exists(audio_file), "Short audio file not found"
     return audio_file
@@ -201,7 +521,8 @@ def download_long_audio() -> str:
     audio_file = "long_example.wav"
     if not os.path.exists(audio_file):
         os.system(
-            'wget -O long_example.wav "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/long_example.wav"'
+            "wget -O long_example.wav "
+            '"https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/long_example.wav"'
         )
     assert os.path.exists(audio_file), "Long audio file not found"
     return audio_file
@@ -291,7 +612,7 @@ class AudioDataset(torch.utils.data.Dataset):
     def _print_filtered(
         n_total: int, dur_total: float, n_filt: int, dur_filt: float
     ) -> None:
-        if n_total == 0:
+        if n_filt == 0:
             return
         pn = 100.0 * n_filt / n_total
         pd = 100.0 * dur_filt / dur_total if dur_total > 0 else 0.0
@@ -374,13 +695,14 @@ class AudioDataset(torch.utils.data.Dataset):
     @staticmethod
     def _load_audio(item: Union[str, np.ndarray, Tensor]) -> Tensor:
         if isinstance(item, str):
-            wav, sr = torchaudio.load(item)
-            if wav.shape[0] > 1:
-                wav = wav.mean(dim=0, keepdim=True)
-            wav = wav.squeeze(0)
-            if sr != SAMPLE_RATE:
-                wav = torchaudio.functional.resample(wav, sr, SAMPLE_RATE)
-            return wav
+            try:
+                with sf.SoundFile(item) as audio:
+                    if audio.subtype == "PCM_16" and audio.channels == 1:
+                        if audio.format == "WAV" and audio.samplerate == SAMPLE_RATE:
+                            return torch.from_numpy(audio.read(dtype="float32"))
+            except RuntimeError:
+                pass
+            return load_audio(item)
         if isinstance(item, np.ndarray):
             return torch.from_numpy(item)
         if isinstance(item, torch.Tensor):

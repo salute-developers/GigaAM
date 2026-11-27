@@ -1,5 +1,5 @@
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import editdistance
 import pytorch_lightning as pl
@@ -11,14 +11,14 @@ from torchaudio.functional import rnnt_loss as _ta_rnnt_loss
 from torchaudio.transforms import FrequencyMasking, TimeMasking
 
 from gigaam.decoder import CTCHead, RNNTHead
-from gigaam.model import GigaAMASR
+from gigaam.model import GigaAMASR, GigaAMDualASR
 
 
 class GigaAMFineTuner(pl.LightningModule):
 
     def __init__(
         self,
-        model: GigaAMASR,
+        model: Union[GigaAMASR, GigaAMDualASR],
         blank_id: int,
         lr: float = 1e-4,
         freeze_encoder_epochs: int = 0,
@@ -32,6 +32,8 @@ class GigaAMFineTuner(pl.LightningModule):
         time_masks: int = 2,
         time_width: int = 20,
         cli_args: Optional[Dict[str, Any]] = None,
+        language: Optional[str] = None,
+        head_lr_multiplier: float = 1.0,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["model", "cli_args"])
@@ -43,9 +45,26 @@ class GigaAMFineTuner(pl.LightningModule):
         )
         self.preprocessor = model.preprocessor
         self.encoder = model.encoder
-        self.head = model.head
-        self._decoding = model.decoding
-        self._tokenizer = model.decoding.tokenizer
+        self._dual = isinstance(model, GigaAMDualASR)
+        if isinstance(model, GigaAMDualASR):
+            self.heads = model.heads
+            self._decodings = model.decodings
+        else:
+            self.head = model.head
+            name = (
+                "raw"
+                if model.cfg.get("raw_text", "e2e" not in model.cfg.model_name)
+                else "e2e"
+            )
+            self._decodings = {name: model.decoding}
+        self.language_embedding = getattr(model, "language_embedding", None)
+        self.language_fusion = model.language_fusion
+        self._language = (
+            language
+            if language is not None
+            else getattr(model, "default_language", None)
+        )
+        self.hparams["language"] = self._language
         self._blank_id = blank_id
         self._rnnt_subbatch_size = rnnt_subbatch_size
         self._freeze_encoder_epochs = freeze_encoder_epochs
@@ -59,19 +78,13 @@ class GigaAMFineTuner(pl.LightningModule):
                 [TimeMasking(time_width) for _ in range(time_masks)]
             )
 
-        self._rnnt_vocab_size = 0
-        if isinstance(self.head, CTCHead):
-            self.mode = "ctc"
-            self._ctc = nn.CTCLoss(blank=blank_id, reduction="none", zero_infinity=True)
-        elif isinstance(self.head, RNNTHead):
-            self.mode = "rnnt"
-            self._rnnt_vocab_size = int(model.cfg.head.joint.num_classes)
-            assert (
-                blank_id + 1 == self._rnnt_vocab_size
-            ), f"blank_id={blank_id} != joint V={self._rnnt_vocab_size}"
-        else:
-            raise ValueError(f"Unsupported head: {type(self.head)}")
+        for head in self._heads().values():
+            if not isinstance(head, (CTCHead, RNNTHead)):
+                raise ValueError(f"Unsupported head: {type(head)}")
 
+        if head_lr_multiplier <= 0:
+            raise ValueError("head_lr_multiplier must be positive")
+        self._head_lr_multiplier = head_lr_multiplier
         self._lr, self._wd = lr, weight_decay
         self._warmup_ratio = warmup_ratio
         self._log_every, self._last_log_step = log_every_n_steps, -1
@@ -82,6 +95,9 @@ class GigaAMFineTuner(pl.LightningModule):
             for p in self.encoder.parameters():
                 p.requires_grad = False
         self._val_errors = self._val_words = 0
+
+    def _heads(self):
+        return self.heads if self._dual else {next(iter(self._decodings)): self.head}
 
     def _encoder_frozen(self) -> bool:
         return self._freeze_encoder_epochs == -1 or (
@@ -112,23 +128,32 @@ class GigaAMFineTuner(pl.LightningModule):
         targets: Tensor,
         input_lens: Tensor,
         target_lens: Tensor,
+        blank_id=None,
     ) -> Tensor:
-        return self._ctc(
+        return torch.nn.functional.ctc_loss(
             log_probs.transpose(0, 1),
             targets.long(),
             input_lens.long(),
             target_lens.long(),
+            blank=self._blank_id if blank_id is None else blank_id,
+            reduction="none",
+            zero_infinity=True,
         ).mean()
 
     def _rnnt_loss(
-        self, logits: Tensor, targets: Tensor, logit_lens: Tensor, target_lens: Tensor
+        self,
+        logits: Tensor,
+        targets: Tensor,
+        logit_lens: Tensor,
+        target_lens: Tensor,
+        blank_id=None,
     ) -> Tensor:
         return _ta_rnnt_loss(
             logits=logits.float(),
             targets=targets.int(),
             logit_lengths=logit_lens.int(),
             target_lengths=target_lens.int(),
-            blank=self._blank_id,
+            blank=self._blank_id if blank_id is None else blank_id,
             reduction="mean",
             fused_log_softmax=True,
         )
@@ -142,37 +167,49 @@ class GigaAMFineTuner(pl.LightningModule):
                 features = aug(features)
             for aug in self._time_aug:
                 features = aug(features)
-        if self._encoder_frozen():
-            with torch.no_grad():
-                return self.encoder(features, feat_lens)
-        return self.encoder(features, feat_lens)
+        embedding = (
+            self.language_embedding(self._language, wavs.shape[0])
+            if self.language_embedding is not None
+            else None
+        )
+        kwargs = {"lang_embedding": embedding} if embedding is not None else {}
+        with torch.set_grad_enabled(
+            torch.is_grad_enabled() and not self._encoder_frozen()
+        ):
+            encoded, lengths = self.encoder(features, feat_lens, **kwargs)
+        if self.language_fusion is not None:
+            encoded = self.language_fusion(encoded, embedding)
+        return encoded, lengths
 
-    def _rnnt_joint(self, encoded: Tensor, tokens: Tensor) -> Tensor:
-        head = self.head
-        assert isinstance(head, RNNTHead)
+    def _rnnt_joint(self, encoded: Tensor, tokens: Tensor, head=None) -> Tensor:
+        head = self.head if head is None else head
         enc_t = encoded.float().transpose(1, 2)
         dec, jnt = head.decoder, head.joint
-        bos = torch.zeros(
-            enc_t.size(0), 1, dec.pred_hidden, device=enc_t.device, dtype=enc_t.dtype
-        )
-        pred_out, _ = dec.lstm(
+        bos = enc_t.new_zeros(enc_t.size(0), 1, dec.pred_hidden)
+        prediction, _ = dec.lstm(
             torch.cat([bos, dec.embed(tokens)], dim=1).transpose(0, 1)
         )
+        prediction = prediction.transpose(0, 1)
         return jnt.joint_net(
-            jnt.enc(enc_t).unsqueeze(2)
-            + jnt.pred(pred_out.transpose(0, 1)).unsqueeze(1)
+            jnt.enc(enc_t).unsqueeze(2) + jnt.pred(prediction).unsqueeze(1)
         )
 
     def _rnnt_forward(
-        self, encoded: Tensor, enc_lens: Tensor, tokens: Tensor, tok_lens: Tensor
+        self,
+        encoded: Tensor,
+        enc_lens: Tensor,
+        tokens: Tensor,
+        tok_lens: Tensor,
+        head=None,
     ) -> Tensor:
+        head = self.head if head is None else head
         B = encoded.size(0)
         subb = self._rnnt_subbatch_size or B
 
         # Ensure int32-safe indexing in _ta_rnnt_loss
         max_t = int(enc_lens.max().item())
         max_u1 = int(tok_lens.max().item()) + 1
-        vocab_size = self._rnnt_vocab_size
+        vocab_size = head.joint.joint_net[-1].out_features
         while subb > 1 and subb * max_t * max_u1 * vocab_size >= (1 << 31):
             subb = max(1, subb // 2)
 
@@ -184,11 +221,13 @@ class GigaAMFineTuner(pl.LightningModule):
             tok_i, tok_lens_i = tokens[s], tok_lens[s]
             enc_i = enc_i[:, :, : int(enc_lens_i.max().item())].contiguous()
             tok_i = tok_i[:, : int(tok_lens_i.max().item())].contiguous()
-            logits_i = self._rnnt_joint(enc_i, tok_i)  # [b, T, U+1, V]
+            logits_i = self._rnnt_joint(enc_i, tok_i, head)  # [b, T, U+1, V]
             T, U1 = logits_i.shape[1:3]
             enc_lens_i = enc_lens_i.clamp(min=1, max=T)
             tok_lens_i = tok_lens_i.clamp(min=1, max=U1 - 1)
-            loss_i = self._rnnt_loss(logits_i, tok_i, enc_lens_i, tok_lens_i)
+            loss_i = self._rnnt_loss(
+                logits_i, tok_i, enc_lens_i, tok_lens_i, head.decoder.blank_id
+            )
             losses.append(loss_i * (enc_i.size(0)))
             weights.append(enc_i.size(0))
             del logits_i
@@ -196,58 +235,102 @@ class GigaAMFineTuner(pl.LightningModule):
         return torch.stack(losses).sum() / sum(weights)
 
     def _batch_wer(
-        self, hyps: List[str], tokens: Tensor, tok_lens: Tensor
+        self, hyps: List[str], tokens: Tensor, tok_lens: Tensor, tokenizer
     ) -> Tuple[int, int]:
         errors = words = 0
         for i, hyp in enumerate(hyps):
-            ref = self._tokenizer.decode(tokens[i, : tok_lens[i]].tolist()).split()
+            ref = tokenizer.decode(tokens[i, : tok_lens[i]].tolist()).split()
             hyp_w = hyp.split()
             errors += editdistance.eval(ref, hyp_w)
             words += max(len(ref), 1)
         return errors, words
 
+    def _losses(self, encoded, enc_lens, labels):
+        losses = []
+        distributed = dist.is_available() and dist.is_initialized()
+        for name, head in self._heads().items():
+            tokens, lengths = labels[name]
+            eligible = lengths > 0
+            count = eligible.sum().float()
+            total = count.detach().clone()
+            if distributed:
+                dist.all_reduce(total)
+            if not total.item():
+                continue
+            if count.item():
+                features, feature_lengths = encoded[eligible], enc_lens[eligible]
+                targets, target_lengths = tokens[eligible], lengths[eligible]
+                if isinstance(head, CTCHead):
+                    loss = self._ctc_loss(
+                        head(features),
+                        targets,
+                        feature_lengths,
+                        target_lengths,
+                        self._decodings[name].blank_id,
+                    )
+                else:
+                    loss = self._rnnt_forward(
+                        features, feature_lengths, targets, target_lengths, head
+                    )
+                loss = loss * count / total
+                if distributed:
+                    loss = loss * dist.get_world_size()
+            else:
+                loss = encoded.sum() * 0
+            losses.append(loss)
+        return torch.stack(losses).mean()
+
+    def _errors(self, encoded, enc_lens, labels):
+        errors = words = 0
+        for name, head in self._heads().items():
+            tokens, lengths = labels[name]
+            eligible = lengths > 0
+            if not eligible.any():
+                continue
+            decoding = self._decodings[name]
+            result = decoding.decode(
+                head, encoded[eligible].float(), enc_lens[eligible]
+            )
+            errs, wds = self._batch_wer(
+                [hyp[0] for hyp in result],
+                tokens[eligible],
+                lengths[eligible],
+                decoding.tokenizer,
+            )
+            errors += errs
+            words += wds
+        return errors, words
+
+    def _unpack_batch(self, batch):
+        if len(batch) == 4:
+            wavs, wav_lens, tokens, lengths = batch
+            return wavs, wav_lens, {next(iter(self._decodings)): (tokens, lengths)}
+        return batch
+
     def training_step(self, batch: Tuple[Tensor, ...], batch_idx: int) -> Tensor:
-        wavs, wav_lens, tokens, tok_lens = batch
+        wavs, wav_lens, labels = self._unpack_batch(batch)
         encoded, enc_lens = self._encode(wavs, wav_lens)
-
-        if self.mode == "ctc":
-            log_probs = self.head(encoded)
-            loss = self._ctc_loss(log_probs, tokens, enc_lens, tok_lens)
-        else:
-            loss = self._rnnt_forward(encoded, enc_lens, tokens, tok_lens)
-        self.log("train/loss", loss, prog_bar=True)
-
+        loss = self._losses(encoded, enc_lens, labels)
+        self.log("train/loss", loss, prog_bar=True, batch_size=wavs.size(0))
         if (
             self.global_step % self._log_every == 0
             and self.global_step != self._last_log_step
         ):
             self._last_log_step = self.global_step
-            lr = self.trainer.optimizers[0].param_groups[0]["lr"]
-            self.log("train/lr", lr)
+            self.log("train/lr", self.trainer.optimizers[0].param_groups[0]["lr"])
             with torch.no_grad():
-                res = self._decoding.decode(
-                    self.head, encoded.detach().float(), enc_lens
-                )
-                errs, wds = self._batch_wer([h[0] for h in res], tokens, tok_lens)
-                train_wer = errs / max(wds, 1)
-                self.log("train/wer", train_wer)
+                errs, wds = self._errors(encoded.detach(), enc_lens, labels)
+                self.log("train/wer", errs / max(wds, 1), batch_size=wavs.size(0))
         return loss
 
     def validation_step(self, batch: Tuple[Tensor, ...], batch_idx: int):
-        wavs, wav_lens, tokens, tok_lens = batch
+        wavs, wav_lens, labels = self._unpack_batch(batch)
         encoded, enc_lens = self._encode(wavs, wav_lens)
-
-        if self.mode == "ctc":
-            log_probs = self.head(encoded)
-            loss = self._ctc_loss(log_probs, tokens, enc_lens, tok_lens)
-        else:
-            loss = self._rnnt_forward(encoded, enc_lens, tokens, tok_lens)
-
-        res = self._decoding.decode(self.head, encoded, enc_lens)
-        errs, wds = self._batch_wer([h[0] for h in res], tokens, tok_lens)
+        loss = self._losses(encoded, enc_lens, labels)
+        errs, wds = self._errors(encoded, enc_lens, labels)
         self._val_errors += errs
         self._val_words += wds
-        self.log("val/loss", loss, sync_dist=True)
+        self.log("val/loss", loss, sync_dist=True, batch_size=wavs.size(0))
 
     def on_validation_epoch_end(self):
         errs_t = torch.tensor(self._val_errors, device=self.device, dtype=torch.float64)
@@ -274,14 +357,32 @@ class GigaAMFineTuner(pl.LightningModule):
     ) -> Tuple[List[torch.optim.Optimizer], List[Dict[str, Any]]]:
         # Include encoder params even if currently frozen for staged training, so
         # they are already in the optimizer when unfrozen mid-run
-        params = []
+        params: List[Tensor] = []
+        head_params: List[Tensor] = []
+        all_params: List[Tensor] = []
         for name, p in self.named_parameters():
             if name.startswith("preprocessor."):
                 continue
             if self._freeze_encoder_epochs == -1 and name.startswith("encoder."):
                 continue
-            params.append(p)
-        opt = torch.optim.AdamW(params, lr=self._lr, weight_decay=self._wd)
+            all_params.append(p)
+            (head_params if name.startswith(("head.", "heads.")) else params).append(p)
+        groups: List[Dict[str, Any]] = [
+            {"params": params, "lr": self._lr, "name": "backbone"},
+            {
+                "params": head_params,
+                "lr": self._lr * self._head_lr_multiplier,
+                "name": "head",
+            },
+        ]
+        if self._head_lr_multiplier == 1.0:
+            groups = [{"params": all_params, "lr": self._lr, "name": "all"}]
+        for group in groups:
+            count = sum(p.numel() for p in group["params"])
+            print(
+                f"Optimizer {group['name']}: {count} parameters, peak_lr={group['lr']}"
+            )
+        opt = torch.optim.AdamW(groups, lr=self._lr, weight_decay=self._wd)
         total = self.trainer.estimated_stepping_batches
         warmup = max(1, int(self._warmup_ratio * total))
         decay = max(1, total - warmup)

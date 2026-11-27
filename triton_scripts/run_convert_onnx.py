@@ -1,155 +1,150 @@
+import argparse
 import os
 import shutil
 import sys
-import types
-import warnings
-from typing import Any, Tuple
 
-import omegaconf
 import torch
-from torch import Tensor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gigaam  # noqa: E402
-from gigaam.utils import onnx_converter  # noqa: E402
 
-EXPORT_DTYPE = torch.float16
-
-
-# We need to override the forward method to return the argmax of the logits
-# to avoid variable output shapes in the ONNX / TRT and keep the unified config.
-def forward_for_export_with_argmax(
-    self: Any, features: Tensor, feature_lengths: Tensor
-) -> Tuple[Tensor, Tensor]:
-    encoded, encoded_len = self.encoder(features, feature_lengths)
-    logits = self.head(encoded)
-    token_ids = logits.argmax(dim=-1)
-    return token_ids, encoded_len.long()
+BACKENDS = {
+    "CPUExecutionProvider": "cpu",
+    "CUDAExecutionProvider": "cuda",
+    "TensorRT": "trt",
+    "TensorRT-fp16": "trt_fp16",
+}
 
 
-def _to_onnx_with_token_ids(
-    self: Any, dir_path: str = ".", dtype: torch.dtype = torch.float32
+def convert_dual_repository(
+    model, contexts, repository, provider: str, dynamic_context=None, max_streams=32
 ) -> None:
-    """Convert to ONNX with token ids instead of logits."""
-    saved_forward = self.forward
-    self.forward = self.forward_for_export
-    try:
-        with self.encoder.onnx_export_mode():
-            onnx_converter(
-                model_name="model",
-                out_dir=dir_path,
-                module=self,
-                inputs=self.encoder.input_example(),
-                input_names=["features", "feature_lengths"],
-                output_names=["token_ids", "token_ids_lengths"],
-                dynamic_axes={
-                    "features": {0: "batch_size", 2: "seq_len"},
-                    "feature_lengths": {0: "batch_size"},
-                    "token_ids": {0: "batch_size", 1: "seq_len"},
-                    "token_ids_lengths": {0: "batch_size"},
-                },
-                export_dtype=dtype,
-            )
-    finally:
-        self.forward = saved_forward
+    """Generate isolated dual repositories without changing legacy ensembles."""
+    from pathlib import Path
 
-
-def convert_ctc(model: Any, dtype: torch.dtype = torch.float16) -> tuple[str, str]:
-    save_path = "repos/ctc_encoder_onnx/1"
-    postprocessing_dir = "repos/ctc_postprocessing/1"
-
-    original_forward = model.forward_for_export
-    original_to_onnx = model._to_onnx
-
-    model.forward_for_export = types.MethodType(forward_for_export_with_argmax, model)
-    model._to_onnx = types.MethodType(_to_onnx_with_token_ids, model)
-
-    try:
-        model.to_onnx(save_path, dtype=dtype)
-    finally:
-        model.forward_for_export = original_forward
-        model._to_onnx = original_to_onnx
-
-    return save_path, postprocessing_dir
-
-
-def convert_rnnt(model: Any, dtype: torch.dtype = torch.float16) -> tuple[str, str]:
-    save_path = "repos/gigaam_encoder_onnx/1"
-    postprocessing_dir = "repos/rnnt_postprocessing/1"
-
-    model.to_onnx(save_path, dtype=dtype)
-
-    rename_onnx(
-        f"{save_path}/{model.cfg.model_name}_encoder.onnx",
-        f"{save_path}/model.onnx",
+    backend = BACKENDS[provider]
+    template = Path(__file__).with_name("dual_backend.py")
+    if dynamic_context is None:
+        dynamic_context = bool(contexts)
+    saved_contexts = (
+        {int(c.future_context_ms) for c in model.cfg.streaming.contexts}
+        if dynamic_context or contexts
+        else set()
     )
-
-    os.makedirs(postprocessing_dir, exist_ok=True)
-    for part in ("decoder", "joint"):
-        src = f"{save_path}/{model.cfg.model_name}_{part}.onnx"
-        dst = f"{postprocessing_dir}/{model.cfg.model_name}_{part}.onnx"
-        rename_onnx(src, dst)
-
-    return save_path, postprocessing_dir
-
-
-def rename_onnx(src: str, dst: str) -> None:
-    if os.path.exists(src):
-        os.rename(src, dst)
-        print(f"Moved {src} -> {dst}")
-
-
-def save_and_distribute_config(
-    model: Any, save_path: str, postprocessing_dir: str
-) -> None:
-    config_path = f"{save_path}/config.yaml"
-    os.makedirs(os.path.dirname(config_path), exist_ok=True)
-    omegaconf.OmegaConf.save(model.cfg, config_path)
-    print(f"Config saved to {config_path}")
-
-    if not model.cfg.model_name.startswith("v3"):
-        warnings.warn(
-            f"Model '{model.cfg.model_name}' is not from 'v3' family. "
-            "Triton preprocessing will use old feature extraction version.",
-            UserWarning,
+    default_ms = max(contexts or saved_contexts) if dynamic_context else None
+    for milliseconds in [default_ms] if dynamic_context else [None, *contexts]:
+        mode = "offline" if milliseconds is None else "cached"
+        suffix = (
+            "dynamic"
+            if dynamic_context
+            else ("offline" if milliseconds is None else f"stream{milliseconds}")
         )
+        name = f"{model.cfg.model_name}_dual_{suffix}_{backend}"
+        directory = Path(repository) / name
+        version = directory / "1"
+        graphs = version / "graphs"
+        graphs.mkdir(parents=True)
+        model.encoder._triton_batch = milliseconds is not None and hasattr(
+            model.encoder, "downsampling_factor"
+        )
+        model.encoder._triton_native = provider == "TensorRT-fp16"
+        model.encoder._triton_provider = provider
+        try:
+            exported_prefix = model.to_onnx(
+                str(graphs),
+                dtype=torch.float32,
+                future_context_ms=milliseconds,
+                streaming=milliseconds is not None,
+                dynamic_context=bool(dynamic_context),
+            )
+        finally:
+            del model.encoder._triton_batch
+            del model.encoder._triton_native
+            del model.encoder._triton_provider
+        shutil.copyfile(template, version / "model.py")
+        if provider in ("TensorRT", "TensorRT-fp16"):
+            shutil.copyfile(
+                template.with_name("trt_utils.py"), version / "trt_utils.py"
+            )
+        inputs = [
+            ("AUDIO", "FP32", -1),
+            ("AUDIO_LENGTH", "INT64", -1),
+            ("LANGUAGE", "STRING", -1),
+        ]
+        if milliseconds is not None:
+            inputs += [
+                ("STREAM_ID", "STRING", -1),
+                ("START", "BOOL", -1),
+                ("END", "BOOL", -1),
+            ]
+            if dynamic_context:
+                inputs += [
+                    ("STREAMING", "BOOL", -1),
+                    ("FUTURE_CONTEXT_MS", "INT64", -1),
+                ]
+        outputs = [(head + "_TEXT", "STRING", -1) for head in ("RAW", "E2E")]
 
-    preprocessing_dir = "repos/preprocessing/1"
-    for target_dir in (preprocessing_dir, postprocessing_dir):
-        os.makedirs(target_dir, exist_ok=True)
-        shutil.copy(config_path, f"{target_dir}/config.yaml")
-        print(f"Config copied to {target_dir}/config.yaml")
+        def tensor(name, dtype, size):
+            optional = (
+                " optional: true"
+                if name in ("LANGUAGE", "STREAMING", "FUTURE_CONTEXT_MS")
+                else ""
+            )
+            return (
+                f'{{ name: "{name}" data_type: TYPE_{dtype} dims: [{size}]{optional} }}'
+            )
 
-
-def copy_tokenizer(model: Any, postprocessing_dir: str) -> None:
-    tokenizer_path = model.cfg.decoding.get("model_path")
-    if tokenizer_path and os.path.exists(tokenizer_path):
-        filename = os.path.basename(tokenizer_path)
-        shutil.copy(tokenizer_path, f"{postprocessing_dir}/{filename}")
-        print(f"Tokenizer copied to {postprocessing_dir}/{filename}")
+        lines = [
+            f'name: "{name}"',
+            'backend: "python"',
+            "max_batch_size: 0",
+            "input [\n" + ",\n".join((tensor(*item) for item in inputs)) + "\n]",
+            "output [\n" + ",\n".join((tensor(*item) for item in outputs)) + "\n]",
+            (
+                "instance_group [{ count: 1 kind: KIND_CPU }]"
+                if provider == "CPUExecutionProvider"
+                else "instance_group [{ count: 1 kind: KIND_GPU gpus: [0] }]"
+            ),
+        ]
+        for key, value in dict(
+            model_version=(
+                exported_prefix if milliseconds is not None else model.cfg.model_name
+            ),
+            provider=provider,
+            mode=mode,
+            max_streams=str(max_streams),
+        ).items():
+            lines.append(
+                f'parameters {{ key: "{key}" value {{ string_value: "{value}" }} }}'
+            )
+        (directory / "config.pbtxt").write_text("\n".join(lines) + "\n")
+        print(directory)
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        print("Usage: python run_convert_onnx.py <model_version>")
-        sys.exit(1)
-
-    model_version = sys.argv[1]
-    model = gigaam.load_model(model_version)
-
-    dtype = EXPORT_DTYPE
-    dtype_name = {torch.float16: "fp16", torch.float32: "fp32"}[dtype]
-    print(f"ONNX export dtype: {dtype_name}")
-
-    if "ctc" in model_version:
-        save_path, postprocessing_dir = convert_ctc(model, dtype=dtype)
-    else:
-        save_path, postprocessing_dir = convert_rnnt(model, dtype=dtype)
-
-    # Save config and tokenizer for the postprocessing
-    save_and_distribute_config(model, save_path, postprocessing_dir)
-    copy_tokenizer(model, postprocessing_dir)
+    parser = argparse.ArgumentParser(description="Export GigaAM for Triton")
+    parser.add_argument("model_version")
+    parser.add_argument(
+        "--dynamic-context", action=argparse.BooleanOptionalAction, default=None
+    )
+    parser.add_argument("--contexts", type=int, nargs="*", default=[])
+    parser.add_argument("--max-streams", type=int, default=32)
+    parser.add_argument("--repository", default="repos")
+    parser.add_argument("--provider", default="TensorRT-fp16", choices=BACKENDS)
+    args = parser.parse_args()
+    model_version = args.model_version
+    model = gigaam.load_model(model_version, device="cpu")
+    if not isinstance(model, gigaam.GigaAMDualASR):
+        raise ValueError("Triton export requires a v4 dual-head model")
+    convert_dual_repository(
+        model,
+        args.contexts,
+        args.repository,
+        args.provider,
+        args.dynamic_context,
+        args.max_streams,
+    )
 
 
 if __name__ == "__main__":

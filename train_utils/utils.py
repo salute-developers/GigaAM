@@ -1,21 +1,120 @@
+import csv
 import os
 import re
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import editdistance
 import soundfile as sf
+import torch
+from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import Callback, TQDMProgressBar
 from tqdm.auto import tqdm
 
 from gigaam.preprocess import SAMPLE_RATE
-from gigaam.utils import normalize_raw_text  # noqa: F401
+from gigaam.utils import AudioDataset, normalize_raw_text
 
 
-def compute_wer(preds: List[Dict[str, Any]]) -> Tuple[float, float, int, int, int, int]:
+class FineTuneDataset(AudioDataset):
+    def __init__(
+        self, manifest, tokenizers, raw_text=False, keep_empty_targets=False, **kwargs
+    ):
+        self.tokenizers = tokenizers
+        self.encoders = {
+            name: self._make_encoder(tokenizer)
+            for name, tokenizer in tokenizers.items()
+        }
+        self.targets = []
+        self.texts = []
+        self.normalize_raw = raw_text
+        self.keep_empty_targets = keep_empty_targets
+        super().__init__(manifest, **kwargs)
+
+    def _load_manifest(self, manifest_path, min_duration, max_duration):
+        directory = Path(manifest_path).resolve().parent
+        skipped = 0
+        with open(manifest_path, encoding="utf-8") as stream:
+            reader = csv.DictReader(stream, delimiter="\t")
+            if not {"transcription_e2e", "transcription_raw"}.intersection(
+                reader.fieldnames or []
+            ):
+                raise ValueError(
+                    "Fine-tuning requires transcription_e2e or transcription_raw column"
+                )
+            for row in reader:
+                duration = float(row["duration"])
+                if not self._duration_ok(duration, min_duration, max_duration):
+                    continue
+                targets, texts = {}, {}
+                for name, encode in self.encoders.items():
+                    text = (row.get(f"transcription_{name}") or "").strip()
+                    if name == "raw" and self.normalize_raw:
+                        text = normalize_raw_text(text)
+                    texts[name] = text
+                    targets[name] = torch.tensor(encode(text), dtype=torch.long)
+                if not self.keep_empty_targets and not any(
+                    target.numel() for target in targets.values()
+                ):
+                    skipped += 1
+                    continue
+                path = Path(row["path"])
+                self._append_sample(str(directory / path), duration)
+                self.targets.append(targets)
+                self.texts.append(texts)
+        print(f"Skipped {skipped} rows without eligible targets in {manifest_path}")
+        if not self.samples:
+            raise ValueError(f"No eligible fine-tuning samples in {manifest_path}")
+
+    def __getitem__(self, idx):
+        return self._load_audio(self.samples[idx].item), self.targets[idx]
+
+    def collate_fn(self, batch):
+        wavs, targets = zip(*batch)
+        wav_pad, wav_lens = self.collate(list(wavs))
+        labels = {
+            name: self.collate([target[name] for target in targets])
+            for name in self.tokenizers
+        }
+        return wav_pad, wav_lens, labels
+
+
+@lru_cache(maxsize=1)
+def _word_substitutions() -> Dict[Tuple[str, ...], str]:
+    path = Path(__file__).resolve().parents[1] / "assets" / "word_substitutions.tsv"
+    with path.open(encoding="utf-8") as stream:
+        return {
+            tuple(normalize_raw_text(spelling).split()): normalize_raw_text(canonical)
+            for canonical, variant in csv.reader(stream, delimiter="\t")
+            for spelling in (canonical, variant)
+        }
+
+
+def normalize_word_substitutions(text: str) -> str:
+    replacements = _word_substitutions()
+    max_length = max(map(len, replacements))
+    words, result, i = text.split(), [], 0
+    while i < len(words):
+        for length in range(min(max_length, len(words) - i), 0, -1):
+            phrase = tuple(words[i : i + length])
+            if phrase in replacements:
+                result.append(replacements[phrase])
+                i += length
+                break
+        else:
+            result.append(words[i])
+            i += 1
+    return " ".join(result)
+
+
+def compute_wer(
+    preds: List[Dict[str, Any]],
+    language: Optional[str] = None,
+    word_substitutions: bool = True,
+) -> Tuple[float, float, int, int, int, int]:
     """
     Word error rates for prediction rows with ``text`` (reference) and ``pred_text`` (hypothesis).
 
@@ -27,7 +126,11 @@ def compute_wer(preds: List[Dict[str, Any]]) -> Tuple[float, float, int, int, in
         rw, hw = ref_s.split(), hyp_s.split()
         e2e_err += editdistance.eval(rw, hw)
         e2e_w += len(rw)
-        nr, nh = normalize_raw_text(ref_s), normalize_raw_text(hyp_s)
+        nr = normalize_raw_text(ref_s, language=language)
+        nh = normalize_raw_text(hyp_s, language=language)
+        if word_substitutions:
+            nr = normalize_word_substitutions(nr)
+            nh = normalize_word_substitutions(nh)
         rr, hh = nr.split(), nh.split()
         raw_err += editdistance.eval(rr, hh)
         raw_w += len(rr)
@@ -72,8 +175,7 @@ def save_split(ds, split: str, out_dir: str, max_dur: float, workers: int) -> Li
 
 def load_tonebooks(out_dir: str, max_duration: float = 30.0, workers: int = 8) -> Path:
     """
-    Load ToneBooks dataset and save manifests to the output directory.
-    Creates train / val .tsv files with the following columns: path, duration, transcription.
+    Load ToneBooks and save E2E train / val manifests to the output directory.
     """
 
     from datasets import Audio, load_dataset
@@ -97,7 +199,7 @@ def load_tonebooks(out_dir: str, max_duration: float = 30.0, workers: int = 8) -
     ):
         path = out / fname
         path.write_text(
-            "path\tduration\ttranscription\n" + "\n".join(rows) + "\n",
+            "path\tduration\ttranscription_e2e\n" + "\n".join(rows) + "\n",
             encoding="utf-8",
         )
         print(f"  {path} ({len(rows)} samples)")
@@ -112,83 +214,96 @@ def load_fleurs(
     dataset: str = "google/fleurs",
     train_split: str = "train",
     val_split: str = "validation",
-    max_duration: float = 30.0,
+    max_duration: Optional[float] = 30.0,
     max_train_samples: Optional[int] = None,
     max_val_samples: Optional[int] = None,
     workers: int = 8,
+    test_split: Optional[str] = "test",
+    max_test_samples: Optional[int] = None,
 ) -> Path:
-    """
-    Download a FLEURS language dataset and save manifests to the output directory.
-    Creates train / val .tsv files with the following columns: path, duration, transcription.
-    """
-
+    """Load official FLEURS audio and verbatim/normalized train, val, test labels."""
     import io
-
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-    from huggingface_hub import hf_hub_download, list_repo_files
+    import tarfile
+    import urllib.request
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    repo_files = list_repo_files(dataset, repo_type="dataset")
-
-    def build_split(hf_split: str, split: str, samples: Optional[int]) -> List[str]:
-        prefix = f"parquet-data/{lang}/{hf_split}-"
-        shards = sorted(
-            f for f in repo_files if f.startswith(prefix) and f.endswith(".parquet")
-        )
-        if not shards:
-            raise FileNotFoundError(
-                f"No parquet shards under '{prefix}*' in {dataset}; "
-                f"check the language code ('{lang}') and split ('{hf_split}')."
-            )
-        tables = []
-        n_rows = 0
-        for shard in shards:
-            pf = hf_hub_download(dataset, shard, repo_type="dataset")
-            tables.append(pq.read_table(pf, columns=["audio", "transcription"]))
-            n_rows += tables[-1].num_rows
-            if samples is not None and n_rows >= samples:
-                break
-        table = pa.concat_tables(tables)
-
-        audios = table.column("audio")
-        texts = table.column("transcription")
-        n = table.num_rows if samples is None else min(samples, table.num_rows)
-        audio_dir = out / "audio" / split
-        audio_dir.mkdir(parents=True, exist_ok=True)
-
-        def process_one(i: int) -> Optional[str]:
-            text = (texts[i].as_py() or "").strip()
-            data, sr = sf.read(io.BytesIO(audios[i].as_py()["bytes"]), dtype="float32")
-            dur = len(data) / sr
-            if dur > max_duration:
-                return None
-            p = audio_dir / f"{i:06d}.wav"
-            if not p.exists():
-                sf.write(str(p), data, sr)
-            return f"audio/{split}/{i:06d}.wav\t{dur:.3f}\t{text}"
-
-        with ThreadPoolExecutor(max_workers=max(1, min(workers, n))) as ex:
-            lines = list(
-                tqdm(ex.map(process_one, range(n)), total=n, desc=f"{split} ({n})")
-            )
-        return [ln for ln in lines if ln is not None]
-
-    print(f"Loading {dataset} [{lang}]...")
-    for hf_split, split, samples in (
+    source_dir = out / "source"
+    source_dir.mkdir(exist_ok=True)
+    base_url = f"https://huggingface.co/datasets/{dataset}/resolve/main/data/{lang}"
+    splits = [
         (train_split, "train", max_train_samples),
         (val_split, "val", max_val_samples),
-    ):
-        rows = build_split(hf_split, split, samples)
-        path = out / f"manifest_{split}.tsv"
-        path.write_text(
-            "path\tduration\ttranscription\n" + "\n".join(rows) + "\n",
-            encoding="utf-8",
-        )
-        print(f"  {path} ({len(rows)} samples)")
+    ]
+    if test_split is not None:
+        splits.append((test_split, "test", max_test_samples))
+    for hf_split, split, limit in splits:
+        hf_split = "dev" if hf_split == "validation" else hf_split
+        source_path = source_dir / f"{hf_split}.tsv"
+        if not source_path.exists():
+            with urllib.request.urlopen(
+                f"{base_url}/{hf_split}.tsv", timeout=90
+            ) as response:
+                source_path.write_bytes(response.read())
+        with source_path.open(encoding="utf-8", newline="") as stream:
+            source_rows = list(
+                csv.reader(stream, delimiter="\t", quoting=csv.QUOTE_NONE)
+            )
+        rows = []
+        for row in source_rows:
+            if len(row) < 6 or Path(row[1]).name != row[1]:
+                raise ValueError(f"Invalid FLEURS row in {source_path}: {row!r}")
+            if max_duration is None or int(row[5]) / SAMPLE_RATE <= max_duration:
+                rows.append(row)
+        if limit is not None:
+            rows = rows[:limit]
+        audio_dir = out / "audio" / split
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        missing = {row[1] for row in rows if not (audio_dir / row[1]).is_file()}
+        if missing:
+            with urllib.request.urlopen(
+                f"{base_url}/audio/{hf_split}.tar.gz", timeout=180
+            ) as response:
+                with tarfile.open(fileobj=response, mode="r|gz") as archive:
+                    for member in archive:
+                        name = Path(member.name).name
+                        if not member.isfile() or name not in missing:
+                            continue
+                        audio_file = archive.extractfile(member)
+                        if audio_file is None:
+                            continue
+                        audio, sample_rate = sf.read(
+                            io.BytesIO(audio_file.read()), dtype="float32"
+                        )
+                        sf.write(audio_dir / name, audio, sample_rate)
+                        missing.remove(name)
+                        if not missing:
+                            break
+            if missing:
+                raise FileNotFoundError(f"Missing FLEURS audio: {sorted(missing)}")
 
-    print(f"\nDone! Manifests at {out}")
+        def make_row(row):
+            path = audio_dir / row[1]
+            info = sf.info(path)
+            if not info.frames:
+                raise ValueError(f"Empty FLEURS audio: {path}")
+            return [
+                str(path.relative_to(out)),
+                info.duration,
+                row[2],
+                normalize_raw_text(row[3]),
+            ]
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+            manifest_rows = list(executor.map(make_row, rows))
+        manifest = out / f"manifest_{split}.tsv"
+        with manifest.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+            writer.writerow(
+                ["path", "duration", "transcription_e2e", "transcription_raw"]
+            )
+            writer.writerows(manifest_rows)
+        print(f"{manifest}: {len(manifest_rows)} samples")
     return out
 
 
@@ -198,8 +313,8 @@ class StepProgressBar(TQDMProgressBar):
         super().__init__()
         self._steps_per_epoch = steps_per_epoch
 
-    def on_train_epoch_start(self, trainer: Any, pl_module: Any):
-        super().on_train_epoch_start(trainer, pl_module)
+    def on_train_epoch_start(self, trainer: Trainer, *args: Any) -> None:
+        super().on_train_epoch_start(trainer, *args)
         acc = trainer.accumulate_grad_batches
         if acc <= 1:
             return

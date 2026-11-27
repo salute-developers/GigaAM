@@ -15,6 +15,7 @@
 ![plot](./assets/gigaam_scheme.svg)
 
 ## Latest News
+* 2026/11 — GigaAM-v4 (ru-en, surpassing Whisper-large-v3 on English) and GigaAM-Multilingual-v2 (**21** languages, SOTA for CIS): new Zapformer architecture, streaming ASR (160/320/640 ms), dual-head decoding, and native GigaAM VAD for long-form inference.
 * 2026/06 — GigaAM Multilingual: 220M / 600M encoders pre-trained on **2M hours** across **70+ languages**; charwise CTC ASR with best-in-class WER on Russian, Kazakh, Kyrgyz, and Uzbek (moderate on English). Our [research paper](https://arxiv.org/abs/2607.10371) was accepted to InterSpeech 2026!
 * 2026/04 — [model fine-tuning](#model-fine-tuning) (CTC / RNNT), word-level timestamps, [Triton Inference Server](#triton-inference-server-and-tensorrt)
 * 2025/11 — GigaAM-v3: **30%** WER reduction on new data domains; GigaAM-v3-e2e: end-to-end transcription support (**70:30** win in Side-by-Side vs Whisper-large-v3)
@@ -50,21 +51,20 @@ pytest -v tests/test_loading.py -m partial  # or `-m full` to test all models
 
 ## GigaAM overview
 
-GigaAM is a [Conformer](https://arxiv.org/pdf/2005.08100.pdf)-based foundational model (220M–600M parameters) pre-trained on diverse speech data — Russian for the `v1`–`v3` lines, and 70+ languages for the `multilingual` line. It serves as the backbone for the entire GigaAM family, enabling state-of-the-art fine-tuned performance in speech recognition and emotion recognition. We fine-tuned the GigaAM encoder for ASR using [CTC](https://www.cs.toronto.edu/~graves/icml_2006.pdf) and [RNNT](https://arxiv.org/abs/1211.3711) decoders. The GigaAM family includes four lines of models:
+GigaAM is a family of [Zapformer](https://github.com/k2-fsa/icefall/pull/2082)- and [Conformer](https://arxiv.org/pdf/2005.08100.pdf)-based foundational models (220M–780M parameters) pre-trained on up to 10M hours of multilingual speech data. It serves as the backbone for the entire GigaAM family, enabling state-of-the-art fine-tuned performance in speech recognition and emotion recognition. We fine-tuned the GigaAM encoder for ASR using [CTC](https://www.cs.toronto.edu/~graves/icml_2006.pdf) and [RNNT](https://arxiv.org/abs/1211.3711) decoders. The GigaAM family includes six lines of models:
 
 | | Pretrain Method | Pretrain (hours) | ASR (hours) | Available Versions |
 | :--- | :--- | :--- | :--- | :---: |
 | **v1** | [Wav2vec 2.0](https://arxiv.org/abs/2006.11477) | 50,000 | 2,000 | `v1_ssl`, `emo`, `v1_ctc`, `v1_rnnt` |
 | **v2** | [HuBERT–CTC](https://arxiv.org/abs/2506.01192) | 50,000 | 2,000 | `v2_ssl`, `v2_ctc`, `v2_rnnt` |
 | **v3** | HuBERT–CTC | 700,000 | 4,000 | `v3_ssl`, `v3_ctc`, `v3_rnnt`, `v3_e2e_ctc`, `v3_e2e_rnnt` |
+| **v4** | HuBERT-style | 7,000,000 | 58,000  | `v4_ssl`, `v4_ctc`, `v4_rnnt` |
 | **multilingual** | HuBERT–style | 2,000,000 | 50,000 | `multilingual_ssl`, `multilingual_large_ssl`, `multilingual_ctc`, `multilingual_large_ctc` |
-
-Where `v3_e2e_ctc` and `v3_e2e_rnnt` support punctuation and text normalization.
-The `multilingual_*` line provides 220M / 600M SSL backbones and charwise CTC ASR models covering multiple languages.
+| **multilingual_v2** | HuBERT–style | 10,000,000 | 155,000 | `multilingual_v2_ssl`, `multilingual_v2_rnnt` |
 
 ## Model Performance
 
-`GigaAM-v3` training incorporates new internal datasets: callcenter, music, speech with atypical characteristics, and voice messages. As a result, the models perform on average **30%** better on these new domains while maintaining the same quality as `GigaAM-v2` on public benchmarks. In end-to-end ASR comparisons of `e2e_ctc` and `e2e_rnnt` against Whisper (judged via independent LLM-as-a-Judge side-by-side) GigaAM models win by an average margin of **70:30**. Our emotion recognition model `GigaAM-Emo` outperforms existing models by **15%** Macro F1-Score.
+`GigaAM-v4` outperforms `GigaAM-v3-E2E` by **35%** on Russian ASR and achieves best-in-class performance for its model size on English, surpassing `Whisper-large-v3`. `GigaAM-Multilingual-v2` achieves state-of-the-art results on CIS languages and outperforms leading open-weight models on European languages. Both ASR models support streaming with `160, 320, and 640 ms` chunk sizes and feature a dual-head architecture for E2E and raw transcriptions.
 
 For detailed results, see [here](./evaluation.md).
 
@@ -74,25 +74,6 @@ For detailed results, see [here](./evaluation.md).
 
 ### Model inference
 
-**Note:** ASR with `.transcribe` function is applicable for audio **only up to 25 seconds**. To enable `.transcribe_longform` install the additional [pyannote.audio](https://github.com/pyannote/pyannote-audio) dependencies
-
-<details>
-<summary>Longform setup instruction</summary>
-
-* Generate [Hugging Face API token](https://huggingface.co/docs/hub/security-tokens)
-* Accept the conditions to access [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) files and content
-
-```bash
-pip install -e ".[longform]"
-# optionally run longform testing
-pip install -e ".[tests]"
-HF_TOKEN=<your hf token> pytest -v tests/test_longform.py
-```
-</details>
-
-<br>
-
-
 ```python
 import gigaam
 
@@ -101,28 +82,41 @@ audio_path = gigaam.utils.download_short_audio()
 long_audio_path = gigaam.utils.download_long_audio()
 
 # Audio embeddings
-model_name = "v3_ssl"       # Options: `v1_ssl`, `v2_ssl`, `v3_ssl`, `multilingual_ssl`, `multilingual_large_ssl`
+model_name = "v4_ssl"       # Or `multilingual_v2_ssl`
 model = gigaam.load_model(model_name)
 embedding, _ = model.embed_audio(audio_path)
 print(embedding)
 
 # ASR
-model_name = "v3_e2e_rnnt"  # Options: any model version with suffix `_ctc` or `_rnnt`
+model_name = "v4_rnnt"      # Or `v4_ctc` / `multilingual_v2_rnnt`
 model = gigaam.load_model(model_name)
 transcription = model.transcribe(audio_path)
-print(transcription)
+print("E2E:", transcription["e2e"].text)
+print("Raw:", transcription["raw"].text)
+
+# Streaming ASR with 160, 320, or 640 ms future context
+audio = gigaam.load_audio(audio_path)
+stream = gigaam.load_model("v4_rnnt", streaming=True, future_context_ms=160)
+for packet in audio.split(16000):
+    partial = stream.transcribe_partial(packet)
+    print({head: result.text for head, result in partial.items()})
+tail = stream.flush()
+print({head: result.text for head, result in tail.items()})
 
 # ASR with word-level timestamps
 result = model.transcribe(audio_path, word_timestamps=True)
-for word in result.words:
+for word in result["e2e"].words:
     print(f"  [{word.start:.2f} - {word.end:.2f}] {word.text}")
 
 # and long-form ASR
-import os
-os.environ["HF_TOKEN"] = <HF_TOKEN with read access to "pyannote/segmentation-3.0">
 result = model.transcribe_longform(long_audio_path)
-for segment in result:
+for segment in result["e2e"].segments:
    print(f"[{gigaam.format_time(segment.start)} - {gigaam.format_time(segment.end)}]: {segment.text}")
+
+# Voice activity detection
+vad = gigaam.load_model("vad")
+probs = vad.speech_probs(gigaam.load_audio(audio_path))
+print("Speech probabilities:", tuple(probs.shape), probs[:5].tolist())
 
 # Emotion recognition
 model = gigaam.load_model("emo")
@@ -141,42 +135,52 @@ CTC, RNNT, and SSL models can be fine-tuned on custom data using PyTorch Lightni
 ```python
 from transformers import AutoModel
 
-model = AutoModel.from_pretrained("ai-sage/GigaAM-v3", revision="e2e_rnnt", trust_remote_code=True)
+model = AutoModel.from_pretrained(
+    "ai-sage/GigaAM-v4", revision="rnnt", trust_remote_code=True,
+    streaming=True, future_context_ms=160,
+)
 
-model = AutoModel.from_pretrained("ai-sage/GigaAM-Multilingual", revision="ctc", trust_remote_code=True)
+model = AutoModel.from_pretrained(
+    "ai-sage/GigaAM-Multilingual-v2", revision="rnnt",
+    trust_remote_code=True,
+)
 ```
 
 ### ONNX Export and Inference
 
-> **Note:** `to_onnx` exports in **fp32** by default. Pass `dtype=torch.float16` for GPU deployment — it is faster and uses less VRAM. GPU support can be enabled with uninstalling onnxruntime and running `pip install onnxruntime-gpu==1.22.*`.
-
-1. Export the model to ONNX using the `model.to_onnx` method:
-   ```python
-   onnx_dir = "onnx"
-   model_version = "v3_ctc"  # Options: any version
-
-   model = gigaam.load_model(model_version)
-   model.to_onnx(dir_path=onnx_dir, dtype=torch.float32)  # or fp16 (recommended for GPU)
-   ```
-
-2. Run ONNX inference:
+1. **Full-context export and inference:**
    ```python
    from gigaam.onnx_utils import load_onnx, infer_onnx
 
-   sessions, model_cfg = load_onnx(onnx_dir, model_version)
-   result = infer_onnx([audio_path], model_cfg, sessions)
-   print(result[0])
-
-   # or use the whole dataset
-   texts = infer_onnx("/path/to/eval/manifest.tsv", model_cfg, sessions)
-   print(texts[0])
+   onnx_dir = "onnx"
+   model_name = "v4_rnnt"
+   gigaam.load_model(model_name).to_onnx(onnx_dir)
+   sessions, cfg = load_onnx(onnx_dir, model_name)
+   result = infer_onnx([audio_path], cfg, sessions)
+   print("E2E:", result["e2e"][0])
+   print("Raw:", result["raw"][0])
    ```
 
-These and more advanced (e.g. custom audio loading, batching) examples can be found in the [Colab notebook](https://colab.research.google.com/github/salute-developers/GigaAM/blob/main/colab_example.ipynb).
+2. **Streaming export and inference** use the same API and support 160, 320, or 640 ms future contexts:
+   ```python
+   from gigaam.onnx_utils import OnnxGigaAMStreaming, load_onnx
+
+   stream = gigaam.load_model("v4_rnnt", streaming=True, future_context_ms=160)
+   prefix = stream.to_onnx("onnx_streaming")
+   sessions, cfg = load_onnx("onnx_streaming", prefix)
+   runner = OnnxGigaAMStreaming(cfg, sessions)
+   for packet in audio.split(16000):
+       partial = runner.transcribe_partial(packet)
+       print({head: result.text for head, result in partial.items()})
+   tail = runner.flush()
+   print({head: result.text for head, result in tail.items()})
+   ```
+
+These and more advanced examples can be found in the [Colab notebook](https://colab.research.google.com/github/salute-developers/GigaAM/blob/main/colab_example.ipynb).
 
 ### Triton Inference Server and TensorRT
 
-All speech recognition models can also be used in a server environment in ONNX/TRT format through Triton Inference Server. For setup instructions, model conversion, and deployment details, see the [Triton Inference Server documentation](./triton_scripts/README.md).
+Dual-head models can be served in ONNX/TRT format through Triton Inference Server. For setup instructions, model conversion, and deployment details, see the [Triton Inference Server documentation](./triton_scripts/README.md).
 
 ---
 
@@ -209,6 +213,7 @@ If you use GigaAM in your research, please cite our papers:
 ## Links
 * [[arxiv] GigaAM Multilingual: Foundation Model for Underrepresented Languages](https://arxiv.org/abs/2607.10371)
 * [[arxiv] GigaAM: Efficient Self-Supervised Learner for Speech Recognition](https://arxiv.org/abs/2506.01192)
+* [[habr] GigaAM-v4 и GigaAM Multilingual-v2: потоковое распознавание, 21 язык и новый уровень качества](https://habr.com/ru/companies/sberbank/articles/1112846/)
 * [[habr] GigaAM-v3: открытая SOTA-модель распознавания речи на русском](https://habr.com/ru/companies/sberdevices/articles/973160/)
 * [[habr] GigaAM: класс открытых моделей для обработки звучащей речи](https://habr.com/ru/companies/sberdevices/articles/805569)
 * [[youtube] Как научить LLM слышать: GigaAM 🤝 GigaChat Audio](https://www.youtube.com/watch?v=O7NSH2SAwRc)
