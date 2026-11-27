@@ -40,6 +40,7 @@ jobs:
     - name: Download test audio file
       run: |
         wget -O example.wav https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/example.wav
+        wget -O long_example.wav https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/long_example.wav
     
     - name: Cache pip dependencies
       uses: actions/cache@v4
@@ -56,7 +57,8 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip wheel setuptools
-        pip install --no-cache-dir -e ".[longform,tests,train]"
+        pip install --no-cache-dir torch==2.10.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cpu
+        pip install --no-cache-dir -e ".[tests,train]"
 
     - name: Show disk usage after install
       run: df -h
@@ -81,7 +83,7 @@ jobs:
 
     - name: Run onnx tests
       run: |
-        pytest -v tests/test_onnx.py --tb=short
+        pytest -v tests/test_onnx.py tests/test_encoder_variants.py tests/test_streaming.py tests/test_language.py --tb=short
 
     - name: Run timestamps tests
       run: |
@@ -131,6 +133,9 @@ jobs:
       run: |
         isort --check-only --diff gigaam/ tests/ triton_scripts/ train_utils/*.py
 
+    - name: Check imports with isort
+      run: |
+        isort --check-only --diff gigaam/ tests/ triton_scripts/ train_utils/*.py
     - name: Lint with flake8
       run: |
         flake8 --ignore=E203,W503,W504 --max-line-length=120 --statistics gigaam/ tests/ triton_scripts/ train_utils/*.py

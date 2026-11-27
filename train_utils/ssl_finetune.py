@@ -23,19 +23,21 @@ def _finalize_vocab(chars) -> List[str]:
 
 def derive_vocab_from_manifest(manifest_path: str, raw_text: bool = True) -> List[str]:
     """
-    Collect the set of characters that appear in a manifest's ``transcription``
-    column — normalized when ``raw_text``, verbatim otherwise.
+    Collect characters from ``transcription_raw`` when ``raw_text`` is enabled,
+    normalized with the existing raw-text utility, or verbatim ``transcription_e2e``
+    otherwise.
     """
     chars: set = set()
     with open(manifest_path, encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter="\t")
-        if reader.fieldnames is None or "transcription" not in reader.fieldnames:
+        field = "transcription_raw" if raw_text else "transcription_e2e"
+        if reader.fieldnames is None or field not in reader.fieldnames:
             raise ValueError(
-                f"Manifest {manifest_path} has no 'transcription' column; "
+                f"Manifest {manifest_path} has no {field!r} column; "
                 "cannot derive a vocabulary."
             )
         for row in reader:
-            text = row.get("transcription") or ""
+            text = row.get(field) or ""
             chars.update(normalize_raw_text(text) if raw_text else text)
     if not chars:
         raise ValueError(f"No transcription characters found in {manifest_path}.")
@@ -156,7 +158,7 @@ def build_asr_from_ssl(
     head_cfg, decoding_cfg = _head_cfg(
         head_type,
         vocab,
-        d_model=int(ssl.cfg.encoder.d_model),
+        d_model=int(ssl.encoder.feat_out),
         pred_hidden=rnnt_pred_hidden,
         pred_rnn_layers=rnnt_pred_rnn_layers,
         joint_hidden=rnnt_joint_hidden,

@@ -15,6 +15,7 @@ from ssl_finetune import (
 from torch.utils.data import DataLoader
 from utils import (
     EpochTimeLogger,
+    FineTuneDataset,
     StepProgressBar,
     build_exp_name,
     prepare_experiment_dirs,
@@ -22,7 +23,6 @@ from utils import (
 
 import gigaam
 from gigaam.decoder import RNNTHead
-from gigaam.utils import AudioDataset
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rnnt_subbatch_size", type=int, default=0)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--lr", type=float, default=2e-5)
+    p.add_argument("--head_lr_multiplier", type=float, default=1.0)
     p.add_argument("--weight_decay", type=float, default=1e-2)
     p.add_argument("--max_duration", type=float, default=20.0)
     p.add_argument("--min_duration", type=float, default=0.1)
@@ -49,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--activation_checkpointing", action="store_true")
     p.add_argument("--freeze_encoder_epochs", type=int, default=0)
     p.add_argument("--raw_text", action="store_true")
+    p.add_argument("--language", default=None)
     p.add_argument("--warmup_ratio", type=float, default=0.1)
     p.add_argument("--max_epochs", type=int, default=None)
     p.add_argument("--val_check_interval", type=float, default=1.0)
@@ -59,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--disable_tqdm", action="store_true", default=False)
     p.add_argument("--skip_initial_validation", action="store_true", default=False)
     p.add_argument("--save_top_k", type=int, default=2)
+    p.add_argument("--save_weights_only", action="store_true")
     p.add_argument("--disable_spec_augment", action="store_true")
     p.add_argument("--freq_masks", type=int, default=2)
     p.add_argument("--freq_width", type=int, default=27)
@@ -99,7 +102,7 @@ def main():
     print(f"Loading pretrained {args.model_name} ...")
     model = gigaam.load_model(args.model_name, fp16_encoder=False, device="cpu")
     ssl_run = False
-    if isinstance(model, gigaam.GigaAMASR):
+    if isinstance(model, (gigaam.GigaAMASR, gigaam.GigaAMDualASR)):
         if args.vocab or args.build_vocab_from_manifest or args.save_vocab:
             raise RuntimeError(
                 "Custom vocabularies (--vocab / --build_vocab_from_manifest / "
@@ -132,15 +135,22 @@ def main():
     if args.activation_checkpointing:
         model.encoder.activation_checkpointing = True
         print("Encoder: activation checkpointing on (per Conformer layer)")
-    tokenizer = model.decoding.tokenizer
-    blank_id = model.decoding.blank_id
-    is_e2e = "e2e" in model.cfg.model_name
-    mode = "rnnt" if isinstance(model.head, RNNTHead) else "ctc"
-    print(f"Mode: {mode} | vocab={len(tokenizer)}, blank={blank_id}")
+    dual = isinstance(model, gigaam.GigaAMDualASR)
+    is_e2e = not model.cfg.get("raw_text", "e2e" not in model.cfg.model_name)
+    decodings = (
+        model.decodings if dual else {"e2e" if is_e2e else "raw": model.decoding}
+    )
+    blank_id = next(iter(decodings.values())).blank_id
+    for name, decoding in decodings.items():
+        head = model.heads[name] if dual else model.head
+        mode = "rnnt" if isinstance(head, RNNTHead) else "ctc"
+        print(
+            f"Head {name}: {mode} | vocab={len(decoding.tokenizer)}, blank={decoding.blank_id}"
+        )
 
-    if args.raw_text and is_e2e:
+    if args.raw_text and is_e2e and not dual:
         raise ValueError("--raw_text is only for non-e2e models (charwise vocab)")
-    if not is_e2e and not args.raw_text and not ssl_run:
+    if not is_e2e and not args.raw_text and not ssl_run and not dual:
         warnings.warn(
             "Non-e2e model without --raw_text: text won't be normalized. "
             "Consider --raw_text to strip punctuation to vocab chars.",
@@ -148,14 +158,13 @@ def main():
         )
 
     ds_kw = dict(
-        tokenizer=tokenizer,
+        tokenizers={name: decoding.tokenizer for name, decoding in decodings.items()},
         max_duration=args.max_duration,
         min_duration=args.min_duration,
         raw_text=args.raw_text,
-        return_tokens=True,
     )
-    train_ds = AudioDataset(args.train_manifest, **ds_kw)
-    val_ds = AudioDataset(args.val_manifest, **ds_kw)
+    train_ds = FineTuneDataset(args.train_manifest, **ds_kw)
+    val_ds = FineTuneDataset(args.val_manifest, **ds_kw)
     print(f"Train: {len(train_ds)}  Val: {len(val_ds)}")
 
     dl_kw = dict(num_workers=args.num_workers, pin_memory=True)
@@ -163,7 +172,7 @@ def main():
         train_ds,
         batch_size=args.batch_size,
         shuffle=True,
-        drop_last=True,
+        drop_last=False,
         collate_fn=train_ds.collate_fn,
         **dl_kw,
     )
@@ -179,6 +188,7 @@ def main():
         model=model,
         blank_id=blank_id,
         lr=args.lr,
+        head_lr_multiplier=args.head_lr_multiplier,
         freeze_encoder_epochs=args.freeze_encoder_epochs,
         rnnt_subbatch_size=args.rnnt_subbatch_size,
         weight_decay=args.weight_decay,
@@ -190,6 +200,7 @@ def main():
         time_masks=args.time_masks,
         time_width=args.time_width,
         cli_args=vars(args),
+        language=args.language,
     )
 
     ckpt_cb = ModelCheckpoint(
@@ -198,13 +209,14 @@ def main():
         monitor="val_wer",
         mode="min",
         save_top_k=max(1, args.save_top_k),
+        save_weights_only=args.save_weights_only,
     )
 
     strategy = "auto"
     if args.devices > 1:
         strategy = (
             "ddp_find_unused_parameters_true"
-            if args.freeze_encoder_epochs > 0
+            if args.freeze_encoder_epochs > 0 or dual
             else "ddp"
         )
 

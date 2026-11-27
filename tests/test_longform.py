@@ -14,49 +14,42 @@ from gigaam.utils import download_long_audio
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 _predictions = {
-    "v3_e2e_rnnt": [
-        {
-            "transcription": "Вечерня отошла давно, Но в кельях тихо и темно; Уже и сам игумен строгий Свои молитвы прекратил И кости ветхие склонил, Перекрестясь на одр убогий. Кругом и сон, и тишина; Но церкви дверь отворена.",  # noqa: E501
-            "boundaries": (0.03096875, 16.80471875),
-        },
-        {
-            "transcription": "Трепещет луч лампады, И тускло озаряет он И тёмную живопись икон, и возглащённые оклады. И раздаётся в тишине То тяжкий вздох, то шёпот важный, И мрачно дремлет в тишине старинный свод.",  # noqa: E501
-            "boundaries": (17.074718750000002, 32.549093750000004),
-        },
-        {
-            "transcription": "Глухой и влажный Стоят за клиросом чернец и грешник, Неподвижны оба. И шёпот их — Как глаз из гроба, И грешник бледен, как мертвец — Монах. Несчастный! Полно, перестань!",  # noqa: E501
-            "boundaries": (32.95409375, 49.305968750000005),
-        },
-        {
-            "transcription": "Ужасна исповедь злодея, Заплачена тобою дань Тому, Кто в злобе пламенея Лукавого грешника блюдёт И к вечной гибели ведёт. Смирись, опомнись. Время, время. Раскаянье, покров",  # noqa: E501
-            "boundaries": (49.81221875, 65.65784375),
-        },
-        {
-            "transcription": "Я разрешу тебя, грехов сложи мучительное бремя.",
-            "boundaries": (65.94471875, 70.88909375),
-        },
-    ],
     "v3_ctc": [
         {
-            "transcription": "вечерня отошла давно но в кельях тихо и темно уже и сам игумен строгий свои молитвы прекратил и кости ветхие склонил перекрестясь на одр убогий кругом и сон и тишина но церкви дверь отворена",  # noqa: E501
-            "boundaries": (0.03096875, 16.80471875),
+            "transcription": "вечерня отошла давно но в кельях тихо и темно уже и сам игумен строгий свои молитвы прекратил и кости ветхие склонил перекрестясь на одр убогий кругом и сон и тишина но церкви дверь отворена трепещет луч лампады и тускло озаряет он и темну живопись икон и позлащенные оклады и раздается в тишине то тяжкий вздох то шепот важный",  # noqa: E501
+            "boundaries": (0.0, 29.700000000000003),
         },
         {
-            "transcription": "трепещет луч лампады и тускло озаряет он и темную живопись икон и позлащенные оклады и раздается в тишине то тяжкий вздох то шепот важный и мрачно дремлет в вашине старинный свод",  # noqa: E501
-            "boundaries": (17.074718750000002, 32.549093750000004),
+            "transcription": "и мрачно дремлет в вышине старинный свод глухой и влажный стоят за клиросом чернец и грешник неподвижны оба",  # noqa: E501
+            "boundaries": (29.700000000000003, 39.400000000000006),
         },
         {
-            "transcription": "глухой и влажный стоят за клиросом чернец и грешник неподвижны оба и шепот их как глаз из гроба и грешник бледен как мертвец монах несчастный полно перестань",  # noqa: E501
-            "boundaries": (32.95409375, 49.305968750000005),
+            "transcription": "и шепот их как глаз из гроба и грешник бледен как мертвец монах",  # noqa: E501
+            "boundaries": (39.72, 46.2),
         },
         {
-            "transcription": "ужасна исповедь злодея заплачена тобою дань тому кто в злобе пламенея лукаво грешника блюдет и к вечной гибели ведет смирись опомнись время время раскаянье покров",  # noqa: E501
-            "boundaries": (49.81221875, 65.65784375),
+            "transcription": "несчастный полно перестань ужасна исповедь злодея заплачена тобою дань тому кто в злобе пламенея лукаво грешника блюдет и к вечной гибели ведет смирись опомнись время время раскаянье покров я разрешу тебя грехов сложи мучительное бремя",  # noqa: E501
+            "boundaries": (46.76, 71.16),
+        },
+    ],
+    "v3_e2e_rnnt": [
+        {
+            "transcription": "Вечерня отошла давно, Но в кельях тихо и темно; Уже и сам игумен строгий Свои молитвы прекратил И кости ветхие склонил, Перекрестясь на одр убогий. Кругом и сон, и тишина; Но церкви дверь отворена; Трепещет луч лампады; И тускло озаряет он И тёмну живопись икон, И возлащённые оклады. И раздаётся в тишине — То тяжкий вздох, то шёпот важный.",  # noqa: E501
+            "boundaries": (0.0, 29.700000000000003),
         },
         {
-            "transcription": "я разрешу тебя грехов сложи мучительное бремя",
-            "boundaries": (65.94471875, 70.88909375),
+            "transcription": "И мрачно дремлет в вышине старинный свод, глухой и влажный. Стоят за клиросом чернец и грешник, Неподвижны оба.",  # noqa: E501
+            "boundaries": (29.700000000000003, 39.400000000000006),
+        },
+        {
+            "transcription": "И шёпот их — как глаз из гроба, и грешник бледен, как мертвец — монах.",  # noqa: E501
+            "boundaries": (39.72, 46.2),
+        },
+        {
+            "transcription": "Несчастный! Полно, перестань. Ужасна исповедь злодея, Заплачена тобою дань — Тому, Кто в злобе пламенея Лукавого грешника блюдёт И к вечной гибели ведёт. Смирись, опомнись, Время, время, Раскаянье, покров, Я разрешу тебя, Грехов сложи Мучительное бремя.",  # noqa: E501
+            "boundaries": (46.76, 71.16),
         },
     ],
 }
@@ -156,27 +149,22 @@ def test_transcribe_longform(revision):
     from gigaam.types import LongformTranscriptionResult, Segment
 
     model = gigaam.load_model(revision)
-    result = model.transcribe_longform(download_long_audio())
-    ref = _predictions[revision]
-
-    assert isinstance(
-        result, LongformTranscriptionResult
-    ), "Should return LongformTranscriptionResult"
-    assert len(result.segments) == len(ref), "Distinct results len from reference"
-
-    for segment, ref_segment in zip(result.segments, ref):
-        assert isinstance(segment, Segment), "Should be Segment object"
-        assert hasattr(segment, "text"), "Missing text attribute"
-        assert hasattr(segment, "start"), "Missing start attribute"
-        assert hasattr(segment, "end"), "Missing end attribute"
-        start, end = segment.start, segment.end
-        ref_start, ref_end = ref_segment["boundaries"]
-        assert (
-            abs(start - ref_start) < 0.1 and abs(end - ref_end) < 0.1
-        ), f"Segments are not close {start, end} and {ref_start, ref_end}"
-        assert (
-            segment.text == ref_segment["transcription"]
-        ), f"Different transcription: {segment.text} and {ref_segment['transcription']}"
+    result = model.transcribe_longform(download_long_audio(), word_timestamps=True)
+    assert isinstance(result, LongformTranscriptionResult)
+    assert len(result.segments) == len(_predictions[revision])
+    for segment, expected in zip(result.segments, _predictions[revision]):
+        assert segment.text == expected["transcription"]
+        assert (segment.start, segment.end) == pytest.approx(
+            expected["boundaries"], abs=0.1
+        )
+        assert isinstance(segment, Segment)
+        assert segment.text and 0 <= segment.start < segment.end
+        assert segment.end - segment.start <= 30.0
+        assert segment.words
+        assert all(
+            segment.start <= word.start <= word.end <= segment.end + 0.001
+            for word in segment.words
+        )
 
 
 @pytest.mark.parametrize("revision", ["v3_ctc"])
@@ -227,3 +215,31 @@ def test_segmentation_edge_cases():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_conformer_vad_speech_defaults():
+    from gigaam.vad_utils import speech_timestamps
+
+    assert speech_timestamps(np.zeros(25), 0.04, 1.0) == []
+    assert speech_timestamps(np.full(25, 0.5), 0.04, 1.0) == [(0.0, 1.0)]
+    assert speech_timestamps(np.array([0.5, 0.5, 0, 0, 0]), 0.04, 0.2) == []
+
+
+def test_vad_onnx(tmp_path):
+    import torch
+
+    from gigaam.onnx_utils import infer_onnx, load_onnx
+    from gigaam.vad_utils import speech_timestamps
+
+    model = gigaam.load_model("vad", device="cpu")
+    audio = torch.cat(
+        (torch.zeros(16000), gigaam.load_audio(download_long_audio())[:160001])
+    )
+    model.to_onnx(str(tmp_path))
+    sessions, cfg = load_onnx(str(tmp_path), "vad", provider="CPUExecutionProvider")
+    expected = model.speech_probs(audio, batch_size=2).numpy()
+    actual = infer_onnx([audio], cfg, sessions, batch_size=2)[0]
+    np.testing.assert_allclose(actual, expected, atol=2e-6, rtol=0)
+    assert speech_timestamps(actual, 0.04, len(audio) / 16000) == speech_timestamps(
+        expected, 0.04, len(audio) / 16000
+    )

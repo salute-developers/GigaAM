@@ -11,9 +11,11 @@ from pathlib import Path
 import pytest
 import soundfile as sf
 
-import gigaam
-from gigaam.preprocess import SAMPLE_RATE
-from gigaam.utils import download_long_audio
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import gigaam  # noqa: E402
+from gigaam.preprocess import SAMPLE_RATE  # noqa: E402
+from gigaam.utils import download_long_audio  # noqa: E402
 
 TRAIN_UTILS_DIR = Path(__file__).resolve().parents[1] / "train_utils"
 MAX_SAMPLES = 2
@@ -22,24 +24,27 @@ MAX_SAMPLES = 2
 def _write_manifest(
     manifest_path: Path, audio_paths: list[Path], texts: list[str]
 ) -> None:
-    rows = ["path\tduration\ttranscription"]
+    rows = ["path\tduration\ttranscription\ttranscription_e2e\ttranscription_raw"]
     for audio_path, text in zip(audio_paths, texts):
         duration = sf.info(audio_path).duration
-        rows.append(f"{audio_path}\t{duration:.3f}\t{text}")
+        rows.append(f"{audio_path}\t{duration:.3f}\t{text}\t{text}\t{text}")
     manifest_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
 def _run_python(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = ""
-    return subprocess.run(
-        [sys.executable, *args],
-        cwd=cwd,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        return subprocess.run(
+            [sys.executable, *args],
+            cwd=cwd,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        pytest.fail(f"Subprocess failed:\n{error.stdout}\n{error.stderr}")
 
 
 def _extract_e2e_wer(output: str) -> float:
@@ -312,8 +317,12 @@ def test_ssl_finetune_cpu(
         assert _head_out_classes(model) == len(vocab) + 1
 
         with open(pseudo_labeled_dataset) as f:
-            first_audio = next(csv.DictReader(f, delimiter="\t"))["path"]
-        assert isinstance(str(model.transcribe(first_audio)), str)
+            short_audio = next(
+                row["path"]
+                for row in csv.DictReader(f, delimiter="\t")
+                if float(row["duration"]) <= 25
+            )
+        assert isinstance(str(model.transcribe(short_audio)), str)
     finally:
         if output_dir.exists():
             shutil.rmtree(output_dir, ignore_errors=True)
@@ -321,3 +330,141 @@ def test_ssl_finetune_cpu(
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_finetune_manifest_targets(tmp_path):
+    from gigaam.decoding import Tokenizer
+    from train_utils.utils import FineTuneDataset
+
+    manifest = tmp_path / "labels.tsv"
+    manifest.write_text(
+        "path\tduration\ttranscription_e2e\ttranscription_raw\n"
+        "a.wav\t1\tA\ta\nb.wav\t1\tB\t\n"
+        "c.wav\t1\t\tb\nd.wav\t1\t\t\n"
+    )
+    tokenizers = {"e2e": Tokenizer(["A", "B"]), "raw": Tokenizer(["b", "a"])}
+    dataset = FineTuneDataset(str(manifest), tokenizers)
+    assert len(dataset) == 3
+    assert dataset.targets[0]["e2e"].tolist() == [0]
+    assert dataset.targets[0]["raw"].tolist() == [1]
+    assert len(FineTuneDataset(str(manifest), {"raw": tokenizers["raw"]})) == 2
+    manifest.write_text("path\tduration\ttranscription_e2e\na.wav\t1\t\n")
+    with pytest.raises(ValueError, match="No eligible"):
+        FineTuneDataset(str(manifest), tokenizers)
+    manifest.write_text("path\tduration\ttranscription\na.wav\t1\ta\n")
+    with pytest.raises(ValueError, match="transcription_e2e or transcription_raw"):
+        FineTuneDataset(str(manifest), tokenizers)
+
+
+@pytest.mark.parametrize(
+    "reference, hypothesis, expected",
+    [
+        ("Привет, мир!", "привет мир", (100.0, 0.0, 2, 2, 0, 2)),
+        ("Ютуб", "youtube", (100.0, 0.0, 1, 1, 0, 1)),
+        ("a b", "a", (50.0, 50.0, 1, 2, 1, 2)),
+        ("a", "a b c", (200.0, 200.0, 2, 1, 2, 1)),
+        ("a", "", (100.0, 100.0, 1, 1, 1, 1)),
+        ("  a  b  ", "a b", (0.0, 0.0, 0, 2, 0, 2)),
+    ],
+)
+def test_compute_wer(reference, hypothesis, expected):
+    from train_utils.utils import compute_wer
+
+    assert compute_wer([{"text": reference, "pred_text": hypothesis}]) == expected
+
+
+def test_finetune_eval_retains_nonempty_all_oov_references(tmp_path):
+    from gigaam.decoding import Tokenizer
+    from train_utils.utils import FineTuneDataset, compute_wer
+
+    manifest = tmp_path / "all_oov.tsv"
+    sf.write(tmp_path / "clip.wav", [0.0] * 800, SAMPLE_RATE)
+    manifest.write_text(
+        "path\tduration\ttranscription_e2e\nclip.wav\t1\tΩЖ\n",
+        encoding="utf-8",
+    )
+    dataset = FineTuneDataset(
+        str(manifest), {"e2e": Tokenizer(["A"])}, keep_empty_targets=True
+    )
+    assert len(dataset) == 1
+    assert dataset.texts == [{"e2e": "ΩЖ"}]
+    assert dataset.targets[0]["e2e"].numel() == 0
+    labels = dataset.collate_fn([dataset[0]])[2]
+    eligible = [i for i in range(len(labels["e2e"][0])) if dataset.texts[i]["e2e"]]
+    assert eligible == [0]
+    result = compute_wer([{"text": dataset.texts[eligible[0]]["e2e"], "pred_text": ""}])
+    assert result[2:4] == (1, 1)
+
+
+@pytest.mark.parametrize("kind", ["ctc", "rnnt"])
+def test_dual_finetune_gradients_and_reload(tmp_path, kind):
+    import torch
+    from test_streaming import tiny_model
+
+    from train_utils.module import GigaAMFineTuner
+    from train_utils.ssl_finetune import _head_cfg
+
+    cfg = tiny_model().cfg
+    cfg.heads, cfg.decodings = {}, {}
+    for name, vocab in (("e2e", ["A", "B", "C"]), ("raw", ["b", "a"])):
+        head, decoding = _head_cfg(kind, vocab, 8, 8, 1, 8)
+        cfg.heads[name], cfg.decodings[name] = head, decoding
+    del cfg.head, cfg.decoding
+    model = gigaam.GigaAMDualASR(cfg)
+    model.default_language = "ru"
+    tuner = GigaAMFineTuner(model, 2, cli_args={"model_name": "tiny"})
+    encoded, lengths = tuner._encode(torch.randn(2, 771), torch.tensor([771, 700]))
+    targets = torch.tensor([[0], [1]])
+    labels = {
+        "e2e": (targets, torch.tensor([1, 1])),
+        "raw": (targets, torch.tensor([0, 0])),
+    }
+    loss = tuner._losses(encoded, lengths, labels)
+    loss.backward()
+    assert loss.isfinite()
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in tuner.heads["e2e"].parameters()
+    )
+    if kind != "ctc":
+        for module in (tuner.heads["e2e"].decoder, tuner.heads["e2e"].joint):
+            assert any(
+                p.grad is not None and p.grad.abs().sum() > 0
+                for p in module.parameters()
+            )
+    assert all(p.grad is None for p in tuner.heads["raw"].parameters())
+    raw_before = [p.detach().clone() for p in tuner.heads["raw"].parameters()]
+    torch.optim.AdamW(tuner.parameters(), lr=1e-3, weight_decay=0.1).step()
+    for before, parameter in zip(raw_before, tuner.heads["raw"].parameters()):
+        torch.testing.assert_close(parameter, before, rtol=0, atol=0)
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in tuner.encoder.parameters()
+    )
+    tuner.zero_grad(set_to_none=True)
+    encoded, lengths = tuner._encode(torch.randn(2, 771), torch.tensor([771, 700]))
+    labels["raw"] = (targets, torch.tensor([1, 0]))
+    mixed_loss = tuner._losses(encoded, lengths, labels)
+    ignored_targets = targets.clone()
+    ignored_targets[1] = 99
+    labels["raw"] = (ignored_targets, torch.tensor([1, 0]))
+    torch.testing.assert_close(tuner._losses(encoded, lengths, labels), mixed_loss)
+    mixed_loss.backward()
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in tuner.heads["raw"].parameters()
+    )
+    checkpoint = tmp_path / "finetuned.ckpt"
+    torch.save(
+        {"state_dict": tuner.state_dict(), "hyper_parameters": dict(tuner.hparams)},
+        checkpoint,
+    )
+    restored = gigaam.load_model(str(checkpoint), device="cpu", fp16_encoder=False)
+    assert isinstance(restored, gigaam.GigaAMDualASR)
+    assert restored.default_language == "ru"
+    for name, tensor in model.state_dict().items():
+        torch.testing.assert_close(restored.state_dict()[name], tensor)
+    assert (
+        restored.decodings["e2e"].tokenizer.vocab
+        != restored.decodings["raw"].tokenizer.vocab
+    )

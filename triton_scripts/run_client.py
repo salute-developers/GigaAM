@@ -1,98 +1,146 @@
-import sys
-from typing import List
+"""HTTP helpers for generated v4 full-context and packet endpoints."""
 
-import librosa
+import uuid
+
 import numpy as np
 from tritonclient.http import InferenceServerClient, InferInput
 
-SAMPLE_RATE = 16000
 
+def infer_dual_packet(
+    audio,
+    model_name,
+    triton_url="localhost:8000",
+    language=None,
+    stream_id=None,
+    start=False,
+    end=False,
+    streaming=None,
+    future_context_ms=None,
+    client=None,
+    audio_lengths=None,
+    final=None,
+):
+    """Send one clip or a flat batch of clips or packets with their lengths."""
+    import json
 
-def infer_ensemble(
-    wav_paths: List[str],
-    model_type: str = "ctc",
-    backend: str = "onnx",
-    triton_url: str = "localhost:8000",
-    timeout: int = 60,
-) -> List[str]:
-    """
-    Run inference on ensemble model.
-
-    Args:
-        wav_paths: List of paths to WAV files
-        model_type: Type of model - "ctc" or "rnnt"
-        backend: Backend type - "onnx" or "trt"
-        triton_url: Triton server URL (with or without http:// prefix)
-        timeout: Request timeout in seconds
-
-    Returns:
-        List of transcribed texts
-    """
-    if model_type not in ["ctc", "rnnt"]:
-        raise ValueError(f"Invalid model_type: {model_type}. Must be 'ctc' or 'rnnt'")
-    if backend not in ["onnx", "trt"]:
-        raise ValueError(f"Invalid backend: {backend}. Must be 'onnx' or 'trt'")
-
-    model_name = f"gigaam_{model_type}_{backend}"
-
-    if triton_url.startswith("http://"):
-        triton_url = triton_url[7:]
-    elif triton_url.startswith("https://"):
-        triton_url = triton_url[8:]
-
-    if triton_url.startswith("localhost"):
-        triton_url = triton_url.replace("localhost", "127.0.0.1")
-
-    audio_arrays: List[np.ndarray] = []
-    audio_lengths: List[int] = []
-
-    for wav_path in wav_paths:
-        audio = librosa.load(wav_path, sr=SAMPLE_RATE, mono=True)[0]
-        audio_arrays.append(audio.astype(np.float32))
-        audio_lengths.append(len(audio))
-
-    audio_batch = np.concatenate(audio_arrays).astype(np.float32)
-    audio_lengths_array = np.array(audio_lengths, dtype=np.int64)
-
-    client = InferenceServerClient(
-        url=triton_url,
-        connection_timeout=timeout,
-        network_timeout=timeout,
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim != 1:
+        raise ValueError("Audio packets must be mono one-dimensional arrays")
+    lengths = np.asarray(
+        [len(audio)] if audio_lengths is None else audio_lengths, dtype=np.int64
+    )
+    if final is not None:
+        end = final
+    values = {
+        "AUDIO": (audio if audio.size else np.zeros(1, dtype=np.float32), "FP32"),
+        "AUDIO_LENGTH": (lengths, "INT64"),
+    }
+    if language is not None:
+        tag = json.dumps(language) if isinstance(language, (dict, list)) else language
+        values["LANGUAGE"] = (np.array([tag.encode("utf-8")], dtype=object), "BYTES")
+    if stream_id is not None:
+        ids = [stream_id] if isinstance(stream_id, str) else stream_id
+        if len(ids) != len(lengths):
+            raise ValueError("Supply one stream_id per packet")
+        values.update(
+            STREAM_ID=(
+                np.array([key.encode("utf-8") for key in ids], dtype=object),
+                "BYTES",
+            ),
+            START=(np.atleast_1d(np.asarray(start, dtype=np.bool_)), "BOOL"),
+            END=(np.atleast_1d(np.asarray(end, dtype=np.bool_)), "BOOL"),
+        )
+        if streaming is not None:
+            values["STREAMING"] = (np.array([streaming], dtype=np.bool_), "BOOL")
+        if future_context_ms is not None:
+            values["FUTURE_CONTEXT_MS"] = (
+                np.array([future_context_ms], dtype=np.int64),
+                "INT64",
+            )
+    elif start or end or streaming is not None or future_context_ms is not None:
+        raise ValueError("Stream controls require a stream_id")
+    inputs = []
+    for name, (value, dtype) in values.items():
+        item = InferInput(name, value.shape, dtype)
+        item.set_data_from_numpy(value)
+        inputs.append(item)
+    if client is None:
+        with InferenceServerClient(url=triton_url.removeprefix("http://")) as client:
+            result = client.infer(model_name, inputs)
+    else:
+        result = client.infer(model_name, inputs)
+    texts = {
+        head: [
+            value.decode("utf-8") for value in result.as_numpy(head.upper() + "_TEXT")
+        ]
+        for head in ("raw", "e2e")
+    }
+    return (
+        texts
+        if audio_lengths is not None
+        else {head: rows[0] for head, rows in texts.items()}
     )
 
-    input_audio = InferInput("audio_batch", audio_batch.shape, "FP32")
-    input_audio.set_data_from_numpy(audio_batch)
 
-    input_lengths = InferInput("audio_lengths", audio_lengths_array.shape, "INT64")
-    input_lengths.set_data_from_numpy(audio_lengths_array)
+def infer_dual_packets(packets, model_name, *, start=False, final=False, **kwargs):
+    """Send a mapping of stream IDs to mono packets and return deltas by ID."""
+    if not 1 <= len(packets) <= 4:
+        raise ValueError("Supply one to four stream packets")
+    waves = [np.asarray(wave, dtype=np.float32) for wave in packets.values()]
+    if any(wave.ndim != 1 for wave in waves):
+        raise ValueError("Audio packets must be mono one-dimensional arrays")
+    texts = infer_dual_packet(
+        np.concatenate(waves),
+        model_name,
+        stream_id=list(packets),
+        audio_lengths=[len(wave) for wave in waves],
+        start=start,
+        final=final,
+        **kwargs,
+    )
+    return {
+        key: {head: rows[index] for head, rows in texts.items()}
+        for index, key in enumerate(packets)
+    }
 
-    response = client.infer(model_name, [input_audio, input_lengths])
 
-    texts_bytes = response.as_numpy("texts")
-    texts = [text_bytes.decode("utf-8") for text_bytes in texts_bytes]
-
-    return texts
-
-
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print(
-            "Usage: python run_client.py <model_type> <backend> "
-            "<wav_file1> [wav_file2] ..."
+def infer_dual_stream(
+    audio_chunks,
+    model_name,
+    triton_url="localhost:8000",
+    language=None,
+    stream_id=None,
+    future_context_ms=None,
+):
+    """Yield raw/e2e text deltas for packets, then flush with an empty END packet."""
+    stream_id = stream_id or uuid.uuid4().hex
+    started = False
+    dynamic_context = "_dual_dynamic_" in model_name
+    with InferenceServerClient(url=triton_url.removeprefix("http://")) as client:
+        for audio in audio_chunks:
+            yield infer_dual_packet(
+                audio,
+                model_name,
+                language=language,
+                stream_id=stream_id,
+                start=not started,
+                streaming=True if dynamic_context else None,
+                future_context_ms=(
+                    future_context_ms if dynamic_context and not started else None
+                ),
+                client=client,
+            )
+            started = True
+        yield infer_dual_packet(
+            np.zeros(0, dtype=np.float32),
+            model_name,
+            language=language,
+            stream_id=stream_id,
+            start=not started,
+            end=True,
+            streaming=True if dynamic_context else None,
+            future_context_ms=(
+                future_context_ms if dynamic_context and not started else None
+            ),
+            client=client,
         )
-        print("  model_type: ctc | rnnt")
-        print("  backend: onnx | trt")
-        sys.exit(1)
-
-    model_type = sys.argv[1]
-    backend = sys.argv[2]
-    wav_files = sys.argv[3:]
-
-    if not wav_files:
-        print("Error: No WAV files provided")
-        sys.exit(1)
-
-    texts = infer_ensemble(wav_files, model_type=model_type, backend=backend)
-
-    for wav_file, text in zip(wav_files, texts):
-        print(f"{wav_file}: {text}")

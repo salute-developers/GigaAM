@@ -2,7 +2,19 @@ from typing import List
 
 from .decoding import Tokenizer
 from .preprocess import SAMPLE_RATE
-from .types import Word
+from .types import TranscriptionResult, Word
+
+
+def tokens_to_transcription(tokenizer, token_ids, token_frames, frame_shift=None):
+    """Decode tokens with optional word timestamps on the supplied frame grid."""
+    return TranscriptionResult(
+        text=tokenizer.decode(token_ids),
+        words=(
+            frames_to_words(tokenizer, token_ids, token_frames, frame_shift)
+            if frame_shift is not None
+            else None
+        ),
+    )
 
 
 def compute_frame_shift(audio_length_samples: int, seq_len: int) -> float:

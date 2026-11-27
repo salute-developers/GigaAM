@@ -20,6 +20,72 @@ class CTCHead(nn.Module):
             self.decoder_layers(encoder_output).transpose(1, 2), dim=-1
         )
 
+    def input_example(self):
+        conv = self.decoder_layers[0]
+        return (conv.weight.new_zeros(2, conv.in_channels, 24),)
+
+    def input_names(self):
+        return ["encoded"]
+
+    def output_names(self):
+        return ["log_probs"]
+
+    def dynamic_axes(self):
+        return {
+            "encoded": {0: "batch", 2: "frames"},
+            "log_probs": {0: "batch", 1: "frames"},
+        }
+
+
+class DualASRExport(nn.Module):
+    output_names = ["encoded_len", "head_outputs"]
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.ctc = all(isinstance(head, CTCHead) for head in model.heads.values())
+
+    def forward(self, features, lengths, *language):
+        encoded, lengths = self.model.forward_for_export(features, lengths, *language)
+        encoded = encoded.transpose(1, 2)
+        heads = self.model.heads.values()
+        if self.ctc:
+            outputs = _ctc_export_labels(encoded, heads)
+        else:
+            outputs = [head.joint.enc(encoded) for head in heads]
+        return lengths, torch.stack(outputs)
+
+    def dynamic_axes(self):
+        axes = self.model.encoder.dynamic_axes()
+        del axes["encoded"]
+        axes["head_outputs"] = {1: "batch", 2: "frames"}
+        return axes
+
+
+def _ctc_export_labels(encoded, heads):
+    return [
+        nn.functional.linear(encoded, conv.weight[..., 0], conv.bias).argmax(-1)
+        for conv in (head.decoder_layers[0] for head in heads)
+    ]
+
+
+class CTCStreamExport(nn.Module):
+    def __init__(self, model, frontend_count):
+        super().__init__()
+        self.model = model
+        self.frontend_count = frontend_count
+
+    def forward(self, features, lengths, context, position, valid, *caches):
+        split = self.frontend_count
+        features, lengths, *frontend = self.model.encoder.forward_frontend_for_export(
+            features, lengths, *caches[:split]
+        )
+        encoded, lengths, position, valid, *encoder = self.model.forward_for_export(
+            features, lengths, context, position, valid, *caches[split:]
+        )
+        labels = _ctc_export_labels(encoded.transpose(1, 2), self.model.heads.values())
+        return torch.stack(labels, dim=1), lengths, position, valid, *frontend, *encoder
+
 
 class RNNTJoint(nn.Module):
     """
@@ -27,6 +93,8 @@ class RNNTJoint(nn.Module):
     This module combines the outputs of the encoder and the prediction network using
     a linear transformation followed by ReLU activation and another linear projection.
     """
+
+    supports_frame_windows = True
 
     def __init__(
         self, enc_hidden: int, pred_hidden: int, joint_hidden: int, num_classes: int
@@ -147,3 +215,178 @@ class RNNTHead(nn.Module):
         super().__init__()
         self.decoder = RNNTDecoder(**decoder)
         self.joint = RNNTJoint(**joint)
+
+
+class RNNTAdvance(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.heads = model.heads
+        self.vocab_size = max(
+            head.decoder.embed.num_embeddings for head in self.heads.values()
+        )
+        self.max_symbols = min(dec.max_symbols for dec in model.decodings.values())
+
+    def _pad_vocab(self, value, fill=0.0):
+        return nn.functional.pad(
+            value, (0, self.vocab_size - value.size(-1)), value=fill
+        )
+
+    def forward(self, projected, lengths, position, previous, repeats, hidden, cell):
+        lstms = [head.decoder.lstm for head in self.heads.values()]
+        joints = [head.joint for head in self.heads.values()]
+        weights = torch.stack(
+            [torch.cat((m.weight_ih_l0, m.weight_hh_l0), 1).T for m in lstms]
+        )
+        bias = torch.stack([m.bias_ih_l0 + m.bias_hh_l0 for m in lstms])[:, None]
+        embeddings = torch.stack(
+            [self._pad_vocab(h.decoder.embed.weight.T).T for h in self.heads.values()]
+        )
+        pred_weights = torch.stack([joint.pred.weight.T for joint in joints])
+        pred_bias = torch.stack([joint.pred.bias for joint in joints])[:, None]
+        output = [joint.joint_net[1] for joint in joints]
+        join_weights = torch.stack(
+            [self._pad_vocab(layer.weight.T) for layer in output]
+        )
+        join_bias = torch.stack(
+            [self._pad_vocab(layer.bias, -torch.inf) for layer in output]
+        )[:, None]
+        blank = position.new_tensor(
+            [head.decoder.blank_id for head in self.heads.values()]
+        )[:, None]
+        offsets = torch.arange(8, device=position.device)
+        tokens = []
+        for _ in range(4):
+            frames = position[..., None] + offsets
+            index = torch.minimum(frames, (lengths - 1).clamp_min(0)[None, :, None])
+            window = projected.gather(
+                2, index[..., None].expand(-1, -1, -1, projected.size(-1))
+            )
+            embed = embeddings.gather(
+                1, previous[..., None].expand(-1, -1, embeddings.size(-1))
+            )
+            embed = embed.masked_fill((previous == blank)[..., None], 0)
+            i, f, g, o = (torch.cat((embed, hidden), -1) @ weights + bias).split(
+                [weights.shape[-1] // 4] * 4, dim=-1
+            )
+            next_cell = f.sigmoid() * cell + i.sigmoid() * g.tanh()
+            next_hidden = o.sigmoid() * next_cell.tanh()
+            pred = next_hidden @ pred_weights + pred_bias
+            joined = (
+                (window + pred.unsqueeze(2))
+                .relu()
+                .reshape(projected.size(0), -1, pred.size(-1))
+            )
+            labels = (joined @ join_weights + join_bias).argmax(-1).reshape_as(index)
+            valid = (labels != blank[..., None]) & (frames < lengths[None, :, None])
+            emitted = valid.any(-1)
+            delta = torch.where(valid, 8 - offsets, 0).argmax(-1)
+            symbol = labels.gather(-1, delta[..., None])[..., 0]
+            repeats = torch.where(delta == 0, repeats + 1, 1)
+            advance = repeats >= self.max_symbols
+            position = torch.where(
+                emitted, position + delta + advance.long(), position + 8
+            )
+            repeats = torch.where(emitted & ~advance, repeats, 0)
+            previous = torch.where(emitted, symbol, previous)
+            hidden = torch.where(emitted[..., None], next_hidden, hidden)
+            cell = torch.where(emitted[..., None], next_cell, cell)
+            tokens.append(torch.where(emitted, symbol, -1))
+        return position, previous, repeats, hidden, cell, torch.stack(tokens)
+
+
+class RNNTDecodeExport(nn.Module):
+    def __init__(self, model, example):
+        super().__init__()
+        head = next(iter(model.heads.values()))
+        self.register_buffer(
+            "blank",
+            example.new_tensor(
+                [[head.decoder.blank_id] for head in model.heads.values()],
+                dtype=torch.long,
+            ),
+        )
+        self.hidden_size = head.decoder.pred_hidden
+        self.joint_size = head.joint.enc.out_features
+        self.num_heads = len(model.heads)
+        step = RNNTAdvance(model)
+        self.max_symbols = step.max_symbols
+        projected, lengths = self.input_example(example)
+        self.step = torch.jit.trace(
+            step,
+            (projected, lengths, *self.initial_state(projected)),
+            check_trace=False,
+        )
+
+    def initial_state(self, projected):
+        position = torch.zeros_like(projected[:, :, 0, 0], dtype=torch.long)
+        hidden = projected.new_zeros(
+            (position.size(0), position.size(1), self.hidden_size)
+        )
+        return position, position + self.blank, position, hidden, hidden
+
+    def forward(self, projected, lengths):
+        _, previous, _, hidden, cell = self.initial_state(projected)
+        return self.decode(projected, lengths, previous, hidden, cell)[0]
+
+    def decode(self, projected, lengths, previous, hidden, cell):
+        position = torch.zeros_like(previous)
+        repeats = position
+        limit = projected.size(2) * (self.max_symbols + 1)
+        tokens = position.new_full((limit + 3, position.size(0), position.size(1)), -1)
+        start = 0
+        while start < limit and bool(torch.any(position < lengths)):
+            position, previous, repeats, hidden, cell, labels = self.step(
+                projected, lengths, position, previous, repeats, hidden, cell
+            )
+            indices = (torch.arange(4, device=position.device) + start).view(4, 1, 1)
+            tokens = tokens.scatter(0, indices.expand_as(labels), labels.long())
+            start += 4
+        return tokens, previous, hidden, cell
+
+    def input_example(self, example):
+        return example.new_zeros(
+            (self.num_heads, 2, 16, self.joint_size)
+        ), example.new_full((2,), 16, dtype=torch.long)
+
+    def dynamic_axes(self):
+        return {
+            "projected": {1: "batch", 2: "frames"},
+            "lengths": {0: "batch"},
+            "tokens": {0: "steps", 2: "batch"},
+        }
+
+
+class RNNTStreamDecodeExport(nn.Module):
+    input_names = ["encoded", "lengths", "previous", "hidden", "cell"]
+    output_names = ["tokens", "next_previous", "next_hidden", "next_cell"]
+
+    def __init__(self, model, example):
+        super().__init__()
+        self.decoder = RNNTDecodeExport(model, example)
+        self.projections = nn.ModuleList(
+            head.joint.enc for head in model.heads.values()
+        )
+        self.encoder_dim = model.encoder.feat_out
+
+    def forward(self, encoded, lengths, previous, hidden, cell):
+        encoded = encoded.transpose(1, 2)
+        projected = torch.stack(
+            [projection(encoded) for projection in self.projections]
+        )
+        return self.decoder.decode(projected, lengths, previous, hidden, cell)
+
+    def input_example(self, example):
+        projected, lengths = self.decoder.input_example(example)
+        _, previous, _, hidden, cell = self.decoder.initial_state(projected)
+        encoded = example.new_zeros(
+            lengths.numel(), self.encoder_dim, projected.size(2)
+        )
+        return encoded, lengths, previous, hidden, cell
+
+    def dynamic_axes(self):
+        axes = self.decoder.dynamic_axes()
+        del axes["projected"]
+        axes["encoded"] = {0: "batch", 2: "frames"}
+        for name in (*self.input_names[2:], *self.output_names[1:]):
+            axes[name] = {1: "batch"}
+        return axes

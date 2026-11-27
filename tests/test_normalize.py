@@ -11,10 +11,14 @@ from gigaam.utils import normalize_raw_text
         ("foo   bar\t\nbaz", "foo bar baz"),
         ("  leading and trailing  ", "leading and trailing"),
         ("Hello, world!", "hello world"),
-        # hyphens/dashes (Pd) split words; other punctuation merges in place
+        # punctuation and hyphens split words
         ("из-за дождя", "из за дождя"),
         ("word-internal hyphen", "word internal hyphen"),
-        ("a.b,c-d", "abc d"),
+        ("a.b,c-d", "a b c d"),
+        ("3,14 6:6 1/2", "3 14 6 6 1 2"),
+        ("слово,слово...слово", "слово слово слово"),
+        ('foo"bar', "foo bar"),
+        ("foo''bar", "foo bar"),
         ("...!!!", ""),
         ("дом 9400 кв", "дом 9400 кв"),
         ("Привет, мир!", "привет мир"),
@@ -37,11 +41,15 @@ from gigaam.utils import normalize_raw_text
         ("Қазақстан Республикасы", "қазақстан республикасы"),
         ("Салам, дүйнө!", "салам дүйнө"),
         ("Кыргыз Республикасы — 2024", "кыргыз республикасы 2024"),
-        # Armenian FLEURS: Armenian punctuation (։ ՞ ՝ ՜) dropped
+        # Armenian: internal marks are dropped. Punctuation splits words
         ("Բարև, աշխարհ։", "բարև աշխարհ"),
         ("Հայաստանի Հանրապետություն", "հայաստանի հանրապետություն"),
         ("100 մետրանոց նավը։", "100 մետրանոց նավը"),
         ("Ո՞վ է այնտեղ՝ Արամը։", "ով է այնտեղ արամը"),
+        ("Արա՛մ", "արամ"),
+        ("ինչպե՞ս", "ինչպես"),
+        ("ինչպե՜ս", "ինչպես"),
+        ("Բարև։աշխարհ", "բարև աշխարհ"),
         ("մյուս դեպքերում, գրանցվելու՜ կարիք.", "մյուս դեպքերում գրանցվելու կարիք"),
         ("", ""),
         ("   ", ""),
@@ -49,3 +57,15 @@ from gigaam.utils import normalize_raw_text
 )
 def test_normalize_raw_text(text, expected):
     assert normalize_raw_text(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text, language, expected",
+    [
+        # Azerbaijani I/İ casing differs from the default lowercase
+        ("AZƏRBAYCAN I İ ŞƏKİ", "az", "azərbaycan ı i şəki"),
+        ("I İ", "en", "i i"),
+    ],
+)
+def test_normalize_language(text, language, expected):
+    assert normalize_raw_text(text, language=language) == expected

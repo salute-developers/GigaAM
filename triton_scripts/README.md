@@ -1,82 +1,88 @@
-# Triton Inference Server Setup
+# GigaAM on Triton Inference Server
 
-This setup supports all ASR models from the GigaAM family. Inference is implemented through a Triton ensemble: the client sends WAV files and receives transcribed texts. CTC models are converted to ONNX/TRT entirely, while RNNT models are split into encoder (ONNX/TRT) and decoder/joint components that run in Python using onnxruntime.
+Serve `v4_ctc`, `v4_rnnt`, or `multilingual_v2_rnnt` for full-context inference or packet streaming.
 
-## Prerequisites
+## Export and serve
 
-Navigate to the triton_scripts directory:
+Run from `triton_scripts`. For TensorRT, use the same TensorRT version to build
+and serve the plans. Put `trtexec` on PATH or set `TRTEXEC`.
+
 ```bash
-cd triton_scripts
-```
-
-## 0. Build Docker Image
-
-Build the Triton Inference Server Docker image:
-```bash
+python run_convert_onnx.py v4_ctc --contexts 160 --repository repos
+python run_convert_trt.py repos/v4_ctc_dual_dynamic_trt_fp16/1/graphs/*.onnx
 docker build -t gigaam-triton .
+docker run --rm --gpus all --shm-size=1g -p 8000:8000 \
+  -v "$(pwd)/repos:/models" -v "$(pwd)/..:/opt/gigaam_repo" \
+  -e PYTHONPATH=/opt/gigaam_repo gigaam-triton \
+  tritonserver --model-repository=/models
 ```
 
-## 1. Convert Models to ONNX
+The default provider is TensorRT FP16. For ONNX Runtime CUDA, add
+`--provider CUDAExecutionProvider` to the export and skip plan generation.
+`--contexts 160` creates a dynamic endpoint with 160 ms as the default. The
+client can select another context or request full-context inference.
 
-Convert models to ONNX format. This creates `.onnx` checkpoints and configs:
-```bash
-python run_convert_onnx.py <model_version>  # e.g., v3_ctc, v3_e2e_rnnt
+## Send audio
+
+Install `tritonclient[http]` on the client and use the Triton server's HTTP
+address. Audio is mono FP32 at 16 kHz.
+
+```python
+from tritonclient.http import InferenceServerClient
+from run_client import infer_dual_packet, infer_dual_packets
+
+model = "v4_ctc_dual_dynamic_trt_fp16"
+with InferenceServerClient("triton.example.com:8000") as client:
+    text = infer_dual_packet(wave, model, client=client, stream_id="clip-id",
+                             start=True, final=True, streaming=False)
+    first = infer_dual_packets({"stream-a": a1, "stream-b": b1}, model,
+                               client=client, start=True, future_context_ms=160)
+    last = infer_dual_packets({"stream-a": a2, "stream-b": b2}, model,
+                              client=client, final=True)
 ```
 
-**Note:** The script saves model configs to the preprocessing directory. For `v3` family models, preprocessing differs from earlier versions. Since Triton uses a shared preprocessing model, you can only use models with the same preprocessing simultaneously (either all `v3` models or all earlier models). The preprocessing is determined by the last model converted to ONNX.
+A request supports up to four distinct streams; each packet may contain
+multiple complete chunks, within the engine shape profile. Use stream IDs
+unique across clients, send each stream's packets in order, and route each
+stream to the same replica until `final=True` flushes and releases its state.
+Concatenate `raw` and `e2e` deltas separately. For multilingual RNNT, pass
+`language="auto"` or a language code when starting the stream.
+Independent clip batches can run concurrently with separate HTTP client
+handles. Keep at most one request in flight for each live stream.
 
-## 2. Convert ONNX to TensorRT
+## Streaming throughput
 
-Convert ONNX models to TensorRT format. This converts the version of the corresponding CTC/RNNT model that was last converted to ONNX. Run inside the TensorRT Docker container:
-```bash
-docker run --gpus all -it --rm -v $(pwd):/workspace nvcr.io/nvidia/tensorrt:24.10-py3
-# inside the container:
-bash run_convert_trt.sh <ctc | rnnt>
-```
+Mean RTFx on English FLEURS audio at 160, 320, and 640 ms contexts on NVIDIA
+H100. One pass sends a whole clip at the selected finite context. Long
+packets are 1.5–3 s and short packets are 0.2–0.8 s. Torch uses its FP16
+encoder, and TensorRT uses FP16 plans.
 
-## 3. Start Triton Server
+### `v4_ctc`
 
-Run the Triton Inference Server:
-```bash
-docker run --gpus all --ipc=host -p 8000:8000 -p 8001:8001 -p 8002:8002 \
-  -v "$(pwd)/repos:/models" \
-  -v "$(pwd)/..:/opt/gigaam_repo" \
-  -e PYTHONPATH=/opt/gigaam_repo \
-  gigaam-triton \
-  tritonserver --model-repository=/models --exit-on-error=false
-```
+| Runtime | One pass | Long packets | Short packets |
+| --- | ---: | ---: | ---: |
+| Torch, BS1 | 497.1 | 57.7 | 27.8 |
+| ONNX CUDA, BS1 | 686.9 | 72.3 | 26.7 |
+| ONNX CUDA, BS4 | 2,091.8 | 143.2 | 58.1 |
+| Triton / ONNX CUDA, BS≤4 | 1,820.9 | 135.4 | 53.2 |
+| Triton / TensorRT FP16, BS≤4 | 3,280.4 | 196.8 | 99.7 |
 
-Python backend models (e.g. [`rnnt_postprocessing`](repos/rnnt_postprocessing/1/model.py)) do `import gigaam`. The package lives next to this directory, under `gigaam_repo/gigaam/`.
+### `v4_rnnt`
 
-**Note:** For ONNX models, the default configuration uses `instance_group [{ kind: KIND_GPU }]`. To enable CPU execution, update the `instance_group` to `KIND_CPU` in the following model config files [`ctc`](repos/ctc_encoder_onnx/config.pbtxt), [`rnnt`](repos/gigaam_encoder_onnx/config.pbtxt).
+| Runtime | One pass | Long packets | Short packets |
+| --- | ---: | ---: | ---: |
+| Torch, BS1 | 318.7 | 55.4 | 27.7 |
+| ONNX CUDA, BS1 | 332.1 | 88.4 | 30.3 |
+| ONNX CUDA, BS4 | 792.1 | 195.2 | 62.3 |
+| Triton / ONNX CUDA, BS≤4 | 776.6 | 195.2 | 57.5 |
+| Triton / TensorRT FP16, BS≤4 | 2,579.0 | 317.9 | 101.9 |
 
-## 4. Run Client
+### `multilingual_v2_rnnt` (auto language)
 
-Run inference using the client:
-```bash
-python run_client.py <model_type> <backend> <wav_file1> [wav_file2] ...
-```
-
-Arguments:
-- `model_type`: `ctc` or `rnnt`
-- `backend`: `onnx` or `trt`
-- `wav_file1`, `wav_file2`, ...: Paths to WAV files
-
-Examples:
-```bash
-python run_client.py rnnt onnx example.wav
-python run_client.py ctc trt audio1.wav audio2.wav audio3.wav
-```
-
-## Benchmark
-
-Forward pass time in seconds on CUDA for the first 4 segments from `long_example.wav` (VAD-segmented, ~65s total audio). For torch/onnx — both single-sample and batched inference are shown.
-
-| Backend         | v3_ctc          | v3_e2e_rnnt     |
-|:----------------|:----------------|:----------------|
-| triton/trt      | 0.034 ± 0.000   | 0.403 ± 0.008   |
-| triton/onnx     | 0.046 ± 0.001   | 0.434 ± 0.005   |
-| onnx (bs=4)     | 0.037 ± 0.004   | 0.470 ± 0.017   |
-| onnx (b=1)      | 0.047 ± 0.001   | 1.561 ± 0.014   |
-| torch (bs=4)    | 0.036 ± 0.002   | 0.539 ± 0.012   |
-| torch (bs=1)    | 0.112 ± 0.003   | 1.517 ± 0.028   |
+| Runtime | One pass | Long packets | Short packets |
+| --- | ---: | ---: | ---: |
+| Torch, BS1 | 204.0 | 34.5 | 14.5 |
+| ONNX CUDA, BS1 | 214.0 | 51.5 | 17.2 |
+| ONNX CUDA, BS4 | 477.2 | 124.0 | 39.2 |
+| Triton / ONNX CUDA, BS≤4 | 489.4 | 121.8 | 36.8 |
+| Triton / TensorRT FP16, BS≤4 | 1,443.4 | 204.6 | 55.4 |

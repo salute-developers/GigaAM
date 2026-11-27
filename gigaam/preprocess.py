@@ -21,11 +21,11 @@ def load_audio(audio_path: str, sample_rate: int = SAMPLE_RATE) -> Tensor:
         "-i",
         audio_path,
         "-f",
-        "s16le",
+        "f32le",
         "-ac",
         "1",
         "-acodec",
-        "pcm_s16le",
+        "pcm_f32le",
         "-ar",
         str(sample_rate),
         "-",
@@ -37,7 +37,7 @@ def load_audio(audio_path: str, sample_rate: int = SAMPLE_RATE) -> Tensor:
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=UserWarning)
-        return torch.frombuffer(audio, dtype=torch.int16).float() / 32768.0
+        return torch.frombuffer(audio, dtype=torch.float32)
 
 
 class SpecScaler(nn.Module):
@@ -71,6 +71,10 @@ class FeatureExtractor(nn.Module):
                 hop_length=self.hop_length,
                 n_fft=self.n_fft,
                 center=self.center,
+                mel_scale=kwargs.get("mel_scale", "htk"),
+                norm=kwargs.get("mel_norm", None),
+                f_min=kwargs.get("lowfreq", 0),
+                f_max=kwargs.get("highfreq", None),
             ),
             SpecScaler(),
         )

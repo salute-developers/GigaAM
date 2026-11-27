@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gigaam"
-version = "0.2.0"
+version = "1.0.0"
 description = "GigaAM: A package for audio modeling and ASR."
 readme = "README.md"
 license = "MIT"
@@ -31,15 +31,7 @@ torch = [
     "torch>=2.6",
     "torchaudio>=2.6",
 ]
-longform = [
-    "numba>=0.62",
-    "pyannote.audio==4.0.*",
-    "pyarrow>=23",
-    "torch==2.10.*",
-    "torchaudio==2.10.*",
-    "torchcodec==0.10",
-    "transformers==5.*",
-]
+
 train = [
     "editdistance",
     "lightning>=2.6",
