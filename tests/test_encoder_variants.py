@@ -4,6 +4,7 @@ import torch
 from test_language import tiny_conditioned
 
 from gigaam.encoder import (
+    OrthogonalLinear,
     RotaryPositionalEmbedding,
     RotaryPositionMultiHeadAttention,
     StridingSubsampling,
@@ -101,3 +102,14 @@ def test_zapformer_rejects_flash():
         ZapformerEncoder(flash_attn=True)
     with pytest.raises(NotImplementedError, match="not supported for Zapformer"):
         _apply_flash_policy(tiny_conditioned().cfg, True, torch.device("cpu"))
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="requires MPS")
+@torch.inference_mode()
+def test_zapformer_transposed_projection_matches_cpu_on_mps():
+    torch.manual_seed(7)
+    projection = OrthogonalLinear(768, 768).eval()
+    x = torch.randn(1, 158, 768)
+    expected = projection(x, transpose=True)
+    actual = projection.to("mps")(x.to("mps"), transpose=True).cpu()
+    torch.testing.assert_close(actual, expected)
