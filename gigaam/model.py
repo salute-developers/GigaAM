@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import Dict, List, Optional, Tuple, Union, cast
 
 import hydra
@@ -8,7 +9,12 @@ from torch.utils.data import DataLoader
 
 from .decoder import CTCHead, DualASRExport
 from .preprocess import SAMPLE_RATE, load_audio
-from .types import LongformTranscriptionResult, Segment, TranscriptionResult, Word
+from .timestamps_utils import (
+    compute_frame_shift,
+    confidence_from_logprobs,
+    frames_to_words,
+)
+from .types import LongformTranscriptionResult, Segment, TranscriptionResult
 from .utils import (
     AudioDataset,
     _export_advance,
@@ -153,7 +159,9 @@ class GigaAM(nn.Module):
 
 
 class _LongformASR(GigaAM):
-    def _decode(self, encoded, encoded_len, wav_lens, word_timestamps):
+    def _decode(
+        self, encoded, encoded_len, wav_lens, word_timestamps, return_confidence
+    ):
         raise NotImplementedError
 
     def _decode_head(
@@ -164,27 +172,33 @@ class _LongformASR(GigaAM):
         encoded_lengths,
         wav_lengths=None,
         word_timestamps=False,
-    ):
+        return_confidence=False,
+    ) -> List[TranscriptionResult]:
         parameter = next(head.parameters(), None)
         if parameter is not None:
             encoded = encoded.to(parameter.dtype)
-        decoded = decoding.decode(head, encoded, encoded_lengths)
-        if not word_timestamps:
-            return [(text, None) for text, _, _ in decoded]
-        from .timestamps_utils import compute_frame_shift, frames_to_words
-
-        return [
-            (
-                text,
-                frames_to_words(
-                    decoding.tokenizer,
-                    tokens,
-                    frames,
-                    compute_frame_shift(int(wav_lengths[i]), int(encoded_lengths[i])),
-                ),
+        scores: Optional[List[List[float]]] = [] if return_confidence else None
+        kwargs = {"token_logprobs": scores} if return_confidence else {}
+        decoded = decoding.decode(head, encoded, encoded_lengths, **kwargs)
+        results = []
+        for i, (text, tokens, frames) in enumerate(decoded):
+            logprobs = scores[i] if scores is not None else None
+            words = None
+            if word_timestamps:
+                shift = compute_frame_shift(
+                    int(wav_lengths[i]), int(encoded_lengths[i])
+                )
+                words = frames_to_words(
+                    decoding.tokenizer, tokens, frames, shift, logprobs
+                )
+            results.append(
+                TranscriptionResult(
+                    text=text,
+                    words=words,
+                    confidence=confidence_from_logprobs(logprobs),
+                )
             )
-            for i, (text, tokens, frames) in enumerate(decoded)
-        ]
+        return results
 
     @torch.inference_mode()
     def transcribe_longform(
@@ -196,6 +210,7 @@ class _LongformASR(GigaAM):
         language=None,
         future_context_ms=None,
         *,
+        return_confidence: bool = False,
         merge_gap: float = 0.7,
         pad: float = 0.2,
         strict_limit_duration: float = 30.0,
@@ -212,7 +227,7 @@ class _LongformASR(GigaAM):
         Transcribes a long audio file by splitting it into segments and
         then transcribing each segment (batched inference via AudioDataset).
         Use fr_batch_size and fr_num_workers to control the batched inference.
-        Returns LongformTranscriptionResult with segments containing optional word-level timestamps.
+        Use return_confidence for segment scores and, with word_timestamps, word scores.
         """
         from .vad_utils import segment_audio_file
 
@@ -261,26 +276,29 @@ class _LongformASR(GigaAM):
             encoded, encoded_len = self.forward(
                 wav_pad, wav_lens, language, future_context_ms=future_context_ms
             )
-            decoded = self._decode(encoded, encoded_len, wav_lens, word_timestamps)
+            decoded = self._decode(
+                encoded, encoded_len, wav_lens, word_timestamps, return_confidence
+            )
             batches = decoded if isinstance(decoded, dict) else {"": decoded}
             for name, items in batches.items():
-                for offset, (text, words) in enumerate(items):
+                for offset, item in enumerate(items):
                     seg_start, seg_end = boundaries[idx + offset]
                     word_segments = (
                         [
-                            Word(
-                                text=w.text,
+                            replace(
+                                w,
                                 start=round(w.start + seg_start, 3),
                                 end=round(w.end + seg_start, 3),
                             )
-                            for w in words or []
+                            for w in item.words or []
                         ]
                         if word_timestamps
                         else None
                     )
                     result_segments[name].append(
                         Segment(
-                            text=text,
+                            text=item.text,
+                            confidence=item.confidence,
                             start=seg_start,
                             end=seg_end,
                             words=word_segments,
@@ -310,24 +328,36 @@ class GigaAMASR(_LongformASR):
         encoded_len: Tensor,
         wav_lens: Tensor,
         word_timestamps: bool = False,
-    ) -> List[Tuple[str, Optional[List[Word]]]]:
+        return_confidence: bool = False,
+    ) -> List[TranscriptionResult]:
         return self._decode_head(
-            self.head, self.decoding, encoded, encoded_len, wav_lens, word_timestamps
+            self.head,
+            self.decoding,
+            encoded,
+            encoded_len,
+            wav_lens,
+            word_timestamps,
+            return_confidence,
         )
 
     @torch.inference_mode()
     def transcribe(
-        self, wav_file: str, word_timestamps: bool = False
+        self,
+        wav_file: str,
+        word_timestamps: bool = False,
+        *,
+        return_confidence: bool = False,
     ) -> TranscriptionResult:
         """
         Transcribes a short audio file into text.
-        Returns TranscriptionResult with optional word-level timestamps.
+        Returns a transcription with optional word timestamps and confidence scores.
         """
         wav, length = self.prepare_wav(wav_file, max_samples=LONGFORM_THRESHOLD)
 
         encoded, encoded_len = self.forward(wav, length)
-        text, words = self._decode(encoded, encoded_len, length, word_timestamps)[0]
-        return TranscriptionResult(text=text, words=words)
+        return self._decode(
+            encoded, encoded_len, length, word_timestamps, return_confidence
+        )[0]
 
     def forward_for_export(
         self, features: Tensor, feature_lengths: Tensor
@@ -472,11 +502,18 @@ class GigaAMDualASR(_LongformASR):
     @torch.inference_mode()
     def decode(self, encoded: Tensor, lengths: Tensor) -> Dict[str, List[str]]:
         return {
-            name: [text for text, _ in items]
+            name: [item.text for item in items]
             for name, items in self._decode(encoded, lengths, None).items()
         }
 
-    def _decode(self, encoded, encoded_lengths, wav_lengths, word_timestamps=False):
+    def _decode(
+        self,
+        encoded,
+        encoded_lengths,
+        wav_lengths,
+        word_timestamps=False,
+        return_confidence=False,
+    ):
         return {
             name: self._decode_head(
                 head,
@@ -485,6 +522,7 @@ class GigaAMDualASR(_LongformASR):
                 encoded_lengths,
                 wav_lengths,
                 word_timestamps,
+                return_confidence,
             )
             for name, head in self.heads.items()
         }
@@ -497,16 +535,17 @@ class GigaAMDualASR(_LongformASR):
         *,
         language=None,
         future_context_ms=None,
+        return_confidence: bool = False,
     ) -> Dict[str, TranscriptionResult]:
-        """Transcribe one file independently for each head, optionally with words."""
+        """Transcribe each head independently, optionally with word timestamps and confidence."""
         wav, lengths = self.prepare_wav(wav_file, max_samples=LONGFORM_THRESHOLD)
         encoded, encoded_lengths = self.forward(
             wav, lengths, language, future_context_ms=future_context_ms
         )
         return {
-            name: TranscriptionResult(text=items[0][0], words=items[0][1])
+            name: items[0]
             for name, items in self._decode(
-                encoded, encoded_lengths, lengths, word_timestamps
+                encoded, encoded_lengths, lengths, word_timestamps, return_confidence
             ).items()
         }
 

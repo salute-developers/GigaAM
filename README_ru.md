@@ -124,6 +124,26 @@ emotion2prob = model.get_probs(audio_path)
 print(", ".join([f"{emotion}: {prob:.3f}" for emotion, prob in emotion2prob.items()]))
 ```
 
+#### Оценки уверенности (нативный PyTorch)
+
+Передайте `return_confidence=True`, чтобы получить оценку короткой записи или каждого сегмента длинной записи. Для оценок отдельных слов добавьте `word_timestamps=True`. Модели v1–v3 возвращают один результат. В v4 каждая голова оценивает собственную расшифровку.
+
+```python
+model = gigaam.load_model("v4_rnnt")
+short = model.transcribe(
+    audio_path, return_confidence=True, word_timestamps=True
+)
+print(short["e2e"].confidence)
+for word in short["e2e"].words:
+    print(word.text, word.confidence)
+
+long = model.transcribe_longform(long_audio_path, return_confidence=True)
+for segment in long["e2e"].segments:
+    print(segment.text, segment.confidence)
+```
+
+Оценка равна среднему геометрическому вероятностей токенов, которые выбрал жадный декодер. Символ пропуска (blank) исключается. По оценкам можно выбирать фрагменты для проверки. Шкала не откалибрована, поэтому слово с высокой оценкой тоже может содержать ошибку. Если оценки выключены или декодер не выдал токенов, поле содержит `None`.
+
 ### Дообучение моделей
 
 Модели CTC, RNNT и SSL можно дообучать на собственных данных с помощью PyTorch Lightning. Подробное описание аргументов обучения см. в [`train_utils/README.md`](./train_utils/README.md). Полные примеры для разных ограничений VRAM приведены в [`train_utils/example.ipynb`](./train_utils/example.ipynb).

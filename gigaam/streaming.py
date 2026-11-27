@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Union, 
 import torch
 from torch import Tensor, nn
 
-from .timestamps_utils import tokens_to_transcription
+from .timestamps_utils import confidence_from_logprobs, tokens_to_transcription
 from .types import TranscriptionResult
 
 
@@ -85,15 +85,18 @@ class DecoderStreamState:
     published_words: int = 0
     prediction: Optional[Tensor] = None
     prediction_hidden: Optional[Tuple[Tensor, Tensor]] = None
+    token_logprobs: Optional[List[float]] = None
+    published_tokens: int = 0
 
 
 def decode_frames(head, decoding, encoded: Tensor, state: DecoderStreamState):
-    decoding.decode(
-        head,
-        encoded,
-        encoded.new_tensor([encoded.shape[-1]], dtype=torch.long),
-        [state],
-    )
+    lengths = encoded.new_tensor([encoded.shape[-1]], dtype=torch.long)
+    if state.token_logprobs is None:
+        decoding.decode(head, encoded, lengths, [state])
+        return
+    scores: List[List[float]] = []
+    decoding.decode(head, encoded, lengths, [state], token_logprobs=scores)
+    state.token_logprobs.extend(scores[0])
 
 
 class GigaAMStreaming(nn.Module):
@@ -105,8 +108,9 @@ class GigaAMStreaming(nn.Module):
         future_context_ms: Optional[int] = None,
         language=None,
         word_timestamps: bool = False,
+        return_confidence: bool = False,
     ):
-        """Enable word_timestamps to publish completed words on an absolute frame grid."""
+        """Optionally publish timed words and confidence for each newly emitted piece."""
         super().__init__()
         self.model = model.eval()
         frontend = getattr(self.model.encoder, "frontend", None)
@@ -116,6 +120,7 @@ class GigaAMStreaming(nn.Module):
             raise ValueError("Streaming requires a center=False feature extractor.")
         self._language = language
         self.word_timestamps = word_timestamps
+        self.return_confidence = return_confidence
         self._decoders = (
             {name: (model.heads[name], model.decodings[name]) for name in model.heads}
             if hasattr(model, "heads")
@@ -171,7 +176,12 @@ class GigaAMStreaming(nn.Module):
         self.encoder_state = self.model.encoder.create_stream_state(
             self._chunk_size, self._left_context
         )
-        self.decoder_states = {name: DecoderStreamState() for name in self._decoders}
+        self.decoder_states = {
+            name: DecoderStreamState(
+                token_logprobs=[] if self.return_confidence else None
+            )
+            for name in self._decoders
+        }
         with torch.inference_mode():
             self._lang_embedding = self.model.encode_language(self._language, 1)
         self._wave: Optional[Tensor] = None
@@ -274,6 +284,11 @@ class GigaAMStreaming(nn.Module):
             state.tokens[:count],
             state.frames[:count],
             self._frame_ms / 1000 if self.word_timestamps else None,
+            token_logprobs=(
+                state.token_logprobs[:count]
+                if self.word_timestamps and state.token_logprobs is not None
+                else None
+            ),
         )
         if result.words is not None:
             result.words = result.words[state.published_words :]
@@ -281,11 +296,28 @@ class GigaAMStreaming(nn.Module):
             if final:
                 for word in result.words:
                     word.end = min(word.end, self._samples / self.sample_rate)
-        elif not final:
+        elif not final and result.text.endswith("\ufffd"):
             result.text = result.text.rstrip("\ufffd")
+            if state.token_logprobs is not None:
+                # Keep unfinished UTF-8 byte tokens for the packet that publishes them.
+                count -= 1
+                while count > state.published_tokens and tokenizer.decode(
+                    state.tokens[:count]
+                ).endswith("\ufffd"):
+                    count -= 1
         text = result.text
         result.text = text[len(state.published) :]
         state.published = text
+        if state.token_logprobs is not None:
+            result.confidence = (
+                confidence_from_logprobs(
+                    state.token_logprobs[state.published_tokens : count]
+                )
+                if result.text
+                else None
+            )
+            if result.text:
+                state.published_tokens = count
         return result
 
     def flush(self) -> Union[TranscriptionResult, Dict[str, TranscriptionResult]]:
