@@ -1,0 +1,15 @@
+#!/bin/bash
+# gigaam-transcribe — shell wrapper for gigaam-cli
+# Activates the correct Python venv and runs gigaam-cli
+# Install: ln -s /path/to/gigaam-transcribe /usr/local/bin/gigaam-transcribe
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="${SCRIPT_DIR}/.venv/bin/python"
+
+if [ ! -f "$PYTHON" ]; then
+    echo "Error: Python venv not found at ${SCRIPT_DIR}/.venv" >&2
+    echo "Run: cd ${SCRIPT_DIR} && uv venv .venv && uv pip install mlx safetensors numpy" >&2
+    exit 1
+fi
+
+exec "$PYTHON" "${SCRIPT_DIR}/gigaam-cli" "$@"
