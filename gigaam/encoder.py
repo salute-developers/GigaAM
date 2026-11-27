@@ -1094,6 +1094,9 @@ class OrthogonalLinear(nn.Module):
     def forward(self, x: Tensor, transpose: bool = False) -> Tensor:
         weight = self.weight * self.weight_scale
         if transpose:
+            if x.device.type == "mps":
+                # PyTorch 2.8 MPS linear can misread the transposed weight view.
+                return x @ weight
             weight = weight.t()
         return F.linear(x, weight, None)
 
