@@ -89,6 +89,10 @@ Evaluated on the seven public English Open ASR Leaderboard test sets: AMI Cleane
 |                        | English specified |        560 |              9.99 |
 |                        | English specified |       1120 |              9.51 |
 
+### Third-party result archive
+
+A third-party [comparison of GigaAM v3 RNNT and Whisper large-v3 on a fixed 200-utterance Golos Crowd subset](https://github.com/garrrikkotua/gigaam-vs-whisper-russian) publishes normalized references and hypotheses with a dependency-free corpus-WER verifier. The subset was selected deterministically rather than randomly, and the archived reports do not pin immutable model revisions, so its results are not directly comparable with the complete-set numbers above.
+
 ## Multilingual ASR
 
 Word Error Rate (%) is reported on [Common Voice 27](https://commonvoice.mozilla.org), [FLEURS](https://huggingface.co/datasets/google/fleurs), and internal scripted speech datasets.
